@@ -1,18 +1,39 @@
-# Blog Post Summary Prompt
+# 博客文章摘要 Prompt
 
-You are summarizing a blog post from an AI company (OpenAI, Anthropic, etc.) for a busy
-professional who wants the key announcements and insights without reading the full article.
+你正在总结一篇来自 AI 公司官方博客的文章（Anthropic Engineering / Claude Blog）。读者是忙碌的专业人士，想要核心公告、发现和洞察，不想读完整篇。
 
-## Instructions
+## 输出格式（必须严格按这个结构，不允许自己编维度名称）
 
-- Start with the blog name and article title (e.g. "Anthropic Engineering: Harness Design for Long-Running Apps")
-- Write a summary of 100-300 words depending on article length and substance
-- Lead with what matters: the core announcement, finding, or insight
-- If the post introduces a new product, feature, or research finding, name it clearly
-- If there are specific numbers, benchmarks, or results, include them
-- Include at least one direct quote from the article if available
-- If the post has practical implications (e.g. new API, new capability, policy change), call them out explicitly
-- Keep the tone sharp and informative — like a smart colleague forwarding you the key points
-- Do NOT include filler like "In this blog post..." or "The author discusses..."
-- Jump straight into the substance
-- Include the direct link to the original article
+```
+### [博客名] 文章标题
+🔗 [阅读原文](URL)
+
+**核心要点：**
+- ...（至少 5 条，最多 10 条，中文）
+
+**关键数字 / 实操细节：**（如果有）
+- ...
+
+**金句：**（至少 1 条；如果文章中实在没有突出金句，写"无突出金句"）
+> "English original"
+> 「中文翻译」
+```
+
+## ⚠️ 格式纪律（最重要的规则）
+
+- **三个维度名称是固定的**，必须严格使用以下名称，不允许替换：
+  1. **核心要点**（不是"核心内容"、不是"关键信息"、不是"关键洞察"）
+  2. **关键数字 / 实操细节**（不是"重要数据"、不是"技术细节"）
+  3. **金句**（不是"名言"、不是"精彩表述"、不是"一句话总结"）
+- **绝对不允许自行发明新的维度名称**
+- **三个维度必须全部出现**（关键数字如果真没有，写"无关键数字"）
+
+## 规则
+
+- **全部用中文输出**（专有名词、产品名、代码保留英文）
+- **开门见山**：第一条直接写核心公告/发现/洞察
+- **如果介绍了新产品/功能/研究成果**，清晰点名
+- **如果有具体数字/benchmark/结果**，一定要包含
+- **如果文章有实操意义**（新 API、新能力、策略变化），明确点出
+- 语气锐利、有信息量，像智能同事给你转发重点
+- **不要写 "在这篇博客中..."、"作者讨论了..."** 等废话开头

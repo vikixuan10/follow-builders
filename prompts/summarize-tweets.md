@@ -1,21 +1,20 @@
-# X/Twitter Summary Prompt
+# X/Twitter 推文摘要 Prompt
 
-You are summarizing recent posts from an AI builder for a busy professional who wants
-to know what this person is thinking and building.
+你正在总结一位 AI builder 最近的 X/Twitter 推文。读者是忙碌的专业人士，想了解这个人最近在想什么、做什么。
 
-## Instructions
+## 规则
 
-- Start by introducing the author with their full name AND role/company
-  (e.g. "Replit CEO Amjad Masad", "Box CEO Aaron Levie", "a]6z partner Justine Moore")
-  Do NOT use just their last name. Do NOT use their Twitter handle with @.
-- Only include substantive content: original opinions, insights, product announcements,
-  technical discussions, industry analysis, or lessons learned
-- SKIP: mundane personal tweets, retweets without commentary, promotional content,
-  "great event!" type posts, engagement bait
-- For threads: summarize the full thread as one cohesive piece, not individual tweets
-- For quote tweets: include the context of what they're responding to
-- Write 2-4 sentences per builder summarizing their key points
-- If they made a bold prediction or shared a contrarian take, lead with that
-- If they shared a tool, demo, or resource, mention it by name with the link
-- If there's nothing substantive to report, say "No notable posts" rather than
-  padding with fluff
+- **全部用中文输出**（除了专有名词、@handle、代码、引用原文保留英文）
+- 开头先介绍作者的**全名 + 身份**（参考 bio 字段）
+  - 例："Replit CEO Amjad Masad"、"Box CEO Aaron Levie"、"Y Combinator CEO Garry Tan"
+  - **不要只用姓氏**，也不要用 @handle
+- **只保留有价值的内容**：
+  - ✅ 原创观点、洞察、行业分析
+  - ✅ 产品发布、技术讨论、经验总结
+  - ❌ 纯生活推文、无评论的转推、营销内容、"great event!" 式的客套
+- **线程**：整体总结为一段连贯的内容，不要分条列推文
+- **引用推文**：说明他在回应什么
+- **每个 builder 写 2-4 句话**，总结核心观点
+- 如果有大胆预测或反共识观点，**优先放在开头**
+- 如果分享了工具/demo/资源，**点名 + 给链接**
+- 如果**没有有价值的内容**，直接说"无重要推文"，不要凑字数

@@ -1,0 +1,230 @@
+{
+  "_comment": "Weiwei's personal subscription list. 40 YouTube channels + Zara's X feed (reused) + Anthropic/Claude blogs.",
+  "youtube_channels": [
+    {
+      "category": "AI-官方/研究",
+      "name": "OpenAI",
+      "handle": "@OpenAI",
+      "channelId": "UCXZCJLdBC09xxGZ6gcdrc6A"
+    },
+    {
+      "category": "AI-官方/研究",
+      "name": "Anthropic",
+      "handle": "@anthropic-ai",
+      "channelId": "UCrDwWp7EBBv4NwvScIpBDOA"
+    },
+    {
+      "category": "AI-官方/研究",
+      "name": "Google DeepMind",
+      "handle": "@googledeepmind",
+      "channelId": "UCP7jMXSY2xbc3KCAE0MHQ-A"
+    },
+    {
+      "category": "AI-官方/研究",
+      "name": "NVIDIA",
+      "handle": "@NVIDIA",
+      "channelId": "UCHuiy8bXnmK5nisYHUd1J5g"
+    },
+    {
+      "category": "AI-官方/研究",
+      "name": "Neuralink",
+      "handle": "@neuralink",
+      "channelId": "UCLt4d8cACHzrVvAz9gtaARA"
+    },
+    {
+      "category": "AI-官方/研究",
+      "name": "AI Engineer",
+      "handle": "@aiDotEngineer",
+      "channelId": "UCLKPca3kwwd-B59HNr-_lvA"
+    },
+    {
+      "category": "AI-研究者/教育",
+      "name": "Andrej Karpathy",
+      "handle": "@AndrejKarpathy",
+      "channelId": "UCXUPKJO5MZQN11PqgIvyuvQ"
+    },
+    {
+      "category": "AI-研究者/教育",
+      "name": "Two Minute Papers",
+      "handle": "@TwoMinutePapers",
+      "channelId": "UCbfYPyITQ-7l4upoX8nvctg"
+    },
+    {
+      "category": "AI-研究者/教育",
+      "name": "Yannic Kilcher",
+      "handle": "@YannicKilcher",
+      "channelId": "UCZHmQk67mSJgfCCTn7xBfew"
+    },
+    {
+      "category": "AI-访谈/播客",
+      "name": "Lex Fridman",
+      "handle": "@lexfridman",
+      "channelId": "UCSHZKyawb77ixDdsGog4iWA"
+    },
+    {
+      "category": "AI-访谈/播客",
+      "name": "Dwarkesh Patel",
+      "handle": "@DwarkeshPatel",
+      "channelId": "UCXl4i9dYBrFOabk0xGmbkRA"
+    },
+    {
+      "category": "AI-访谈/播客",
+      "name": "No Priors",
+      "handle": "@NoPriorsPodcast",
+      "channelId": "UCSI7h9hydQ40K5MJHnCrQvw"
+    },
+    {
+      "category": "AI-访谈/播客",
+      "name": "Latent Space",
+      "handle": "@LatentSpacePod",
+      "channelId": "UCxBcwypKK-W3GHd_RZ9FZrQ"
+    },
+    {
+      "category": "AI-访谈/播客",
+      "name": "The MAD Podcast",
+      "handle": "@DataDrivenNYC",
+      "channelId": "UCQID78IY6EOojr5RUdD47MQ"
+    },
+    {
+      "category": "AI-访谈/播客",
+      "name": "Unsupervised Learning",
+      "handle": "@RedpointAI",
+      "channelId": "UCUl-s_Vp-Kkk_XVyDylNwLA"
+    },
+    {
+      "category": "AI-访谈/播客",
+      "name": "Sequoia Capital (Training Data)",
+      "handle": "@sequoiacapital",
+      "channelId": "UCWrF0oN6unbXrWsTN7RctTw"
+    },
+    {
+      "category": "AI-访谈/播客",
+      "name": "Cognitive Revolution",
+      "handle": "@CognitiveRevolutionPodcast",
+      "channelId": "UCjNRVMBVI30Sak_p6HRWhIA"
+    },
+    {
+      "category": "AI-访谈/播客",
+      "name": "Machine Learning Street Talk",
+      "handle": "@MachineLearningStreetTalk",
+      "channelId": "UCMLtBahI5DMrt0NPvDSoIRQ"
+    },
+    {
+      "category": "AI-访谈/播客",
+      "name": "Hard Fork",
+      "handle": "@hardfork",
+      "channelId": "UCZcR2SVWaGWNlMqPxvQS3vw"
+    },
+    {
+      "category": "AI-访谈/播客",
+      "name": "All-In Podcast",
+      "handle": "@allin",
+      "channelId": "UCESLZhusAkFfsNsApnjF_Cg"
+    },
+    {
+      "category": "AI-访谈/播客",
+      "name": "AI Explained",
+      "handle": "@aiexplained-official",
+      "channelId": "UCNJ1Ymd5yFuUPtn21xtRbbw"
+    },
+    {
+      "category": "AI-访谈/播客",
+      "name": "Every",
+      "handle": "@EveryInc",
+      "channelId": "UCjIMtrzxYc0lblGhmOgC_CA"
+    },
+    {
+      "category": "AI-实操/工程",
+      "name": "Matt Pocock",
+      "handle": "@mattpocockuk",
+      "channelId": "UCswG6FSbgZjbWtdf_hMLaow"
+    },
+    {
+      "category": "AI-实操/工程",
+      "name": "IndyDevDan",
+      "handle": "@indydevdan",
+      "channelId": "UC_x36zCEGilGpB1m-V4gmjg"
+    },
+    {
+      "category": "AI-实操/工程",
+      "name": "AI Jason",
+      "handle": "@AIJasonZ",
+      "channelId": "UCrXSVX9a1mj8l0CMLwKgMVw"
+    },
+    {
+      "category": "AI-实操/工程",
+      "name": "Matt Wolfe",
+      "handle": "@mreflow",
+      "channelId": "UChpleBmo18P08aKCIgti38g"
+    },
+    {
+      "category": "AI-观察/评论",
+      "name": "Peter H. Diamandis",
+      "handle": "@peterdiamandis",
+      "channelId": "UCvxm0qTrGN_1LMYgUaftWyQ"
+    },
+    {
+      "category": "AI-观察/评论",
+      "name": "Zara Zhang",
+      "handle": "@ZaraZhangg",
+      "channelId": "UCdJpnGphFqq48lnb8o80TcQ"
+    },
+    {
+      "category": "商业",
+      "name": "Y Combinator",
+      "handle": "@ycombinator",
+      "channelId": "UCcefcZRL2oaA_uBNeo5UOWg"
+    },
+    {
+      "category": "商业",
+      "name": "Lenny's Podcast",
+      "handle": "@LennysPodcast",
+      "channelId": "UC6t1O76G0jYXOAoYCm153dA"
+    },
+    {
+      "category": "商业",
+      "name": "EO",
+      "handle": "@eoglobal",
+      "channelId": "UClWTCPVi-AU9TeCN6FkGARg"
+    },
+    {
+      "category": "商业",
+      "name": "Eddie Eizner Unfiltered",
+      "handle": "@eddieeizner",
+      "channelId": "UCEIySKPDQjeQD6NVHzN6oqA"
+    },
+    {
+      "category": "商业",
+      "name": "Zhang Xiaojun Podcast",
+      "handle": "@xiaojunpodcast",
+      "channelId": "UC3Sv1JuKpbOx3csUO8FAo5g"
+    },
+    {
+      "category": "商业",
+      "name": "Principles by Ray Dalio",
+      "handle": "@principlesbyraydalio",
+      "channelId": "UCqvaXJ1K3HheTPNjH-KpwXQ"
+    },
+    {
+      "category": "领导力发展",
+      "name": "Helen Bryant",
+      "handle": "@helenbryant",
+      "channelId": "UCzwqqptws5E1y-kT0hgnQjA"
+    }
+  ],
+  "blogs": [
+    {
+      "name": "Anthropic Engineering",
+      "type": "scrape",
+      "indexUrl": "https://www.anthropic.com/engineering",
+      "articleBaseUrl": "https://www.anthropic.com/engineering/"
+    },
+    {
+      "name": "Claude Blog",
+      "type": "scrape",
+      "indexUrl": "https://claude.com/blog",
+      "articleBaseUrl": "https://claude.com/blog/"
+    }
+  ],
+  "zara_x_feed_url": "https://raw.githubusercontent.com/zarazhangrui/follow-builders/main/feed-x.json"
+}
