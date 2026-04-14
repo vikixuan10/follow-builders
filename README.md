@@ -1,131 +1,76 @@
-**English** | [中文](README.zh-CN.md)
+# Follow Builders — Python Fork (Personal)
 
-# Follow Builders, Not Influencers
 
-An AI-powered digest that tracks the top builders in AI — researchers, founders, PMs,
-and engineers who are actually building things — and delivers curated summaries of
-what they're saying.
+> **Personal fork** of [`zarazhangrui/follow-builders`](https://github.com/zarazhangrui/follow-builders) by [@zarazhangrui](https://github.com/zarazhangrui).
+>
+> This version is a full Python rewrite heavily customized for my own daily workflow on macOS. If you're looking for the original, well-supported project, go to the upstream repo.
 
-**Philosophy:** Follow people who build products and have original opinions, not
-influencers who regurgitate information.
+## Why I forked
 
-## What You Get
+Zara's "follow builders, not influencers" project is excellent — I'm its target user. But two things pushed me to fork and rewrite:
 
-A daily or weekly digest delivered to your preferred messaging app (Telegram, Discord,
-WhatsApp, etc.) with:
+1. **No Node.js on my machine.** My Mac mini runs Python out of the box; installing the Node toolchain just for this felt wrong.
+2. **I want to run it entirely locally**, triggered by a Claude Code scheduled task on my own machine, not via GitHub Actions on the cloud.
 
-- Summaries of new podcast episodes from top AI podcasts
-- Key posts and insights from 25 curated AI builders on X/Twitter
-- Full articles from official AI company blogs (Anthropic Engineering, Claude Blog)
-- Links to all original content
-- Available in English, Chinese, or bilingual
+So I ported the pipeline to Python 3.9, swapped the source list, tightened the output format, and wired delivery into Resend email + my Obsidian vault.
 
-## Quick Start
+## What's different from upstream
 
-1. Install the skill in your agent (OpenClaw or Claude Code)
-2. Say "set up follow builders" or invoke `/follow-builders`
-3. The agent walks you through setup conversationally — no config files to edit
+|                    | Upstream (Zara)                               | This fork                                                     |
+| ------------------ | --------------------------------------------- | ------------------------------------------------------------- |
+| Language           | Node.js / JavaScript                          | Python 3.9                                                    |
+| Runtime            | GitHub Actions (cloud cron)                   | Local macOS + Claude Code scheduled task (`~08:00 Dublin`)    |
+| YouTube sources    | 6 curated podcasts                            | 35 channels I follow (AI research, podcasts, eng, business)   |
+| X / Twitter sources| 25 builders (updated centrally by Zara)       | Same 25 builders — I still fetch Zara's `feed-x.json` live    |
+| Blog sources       | Anthropic Engineering + Claude Blog           | Same                                                          |
+| Output format      | Flexible                                      | Locked 4-dimension video format (一句话精髓 / 核心观点 / 最值得看的段落 / 金句), all Chinese |
+| Delivery           | Telegram / Discord / email / etc.             | Resend email (HTML) + Obsidian vault archive                  |
 
-The agent will ask you:
-- How often you want your digest (daily or weekly) and what time
-- What language you prefer
-- How you want it delivered (Telegram, email, or in-chat)
+## What I still depend on from upstream
 
-No API keys needed — all content is fetched centrally.
-Your first digest arrives immediately after setup.
+I still pull **Zara's centrally-maintained X feed** (`feed-x.json`) from her upstream repo at fetch time — she pays for the X API and keeps it fresh via her GitHub Actions. Huge thanks to her for making that public; without it this fork wouldn't work.
 
-## Changing Settings
+## Repo layout
 
-Your delivery preferences are configurable through conversation. Just tell your agent:
-
-- "Switch to weekly digests on Monday mornings"
-- "Change language to Chinese"
-- "Make the summaries shorter"
-- "Show me my current settings"
-
-The source list (builders and podcasts) is curated centrally and updates
-automatically — you always get the latest sources without doing anything.
-
-## Customizing the Summaries
-
-The skill uses plain-English prompt files to control how content is summarized.
-You can customize them two ways:
-
-**Through conversation (recommended):**
-Tell your agent what you want — "Make summaries more concise," "Focus on actionable
-insights," "Use a more casual tone." The agent updates the prompts for you.
-
-**Direct editing (power users):**
-Edit the files in the `prompts/` folder:
-- `summarize-podcast.md` — how podcast episodes are summarized
-- `summarize-tweets.md` — how X/Twitter posts are summarized
-- `summarize-blogs.md` — how blog posts are summarized
-- `digest-intro.md` — the overall digest format and tone
-- `translate.md` — how English content is translated to Chinese
-
-These are plain English instructions, not code. Changes take effect on the next digest.
-
-## Default Sources
-
-### Podcasts (6)
-- [Latent Space](https://www.youtube.com/@LatentSpacePod)
-- [Training Data](https://www.youtube.com/playlist?list=PLOhHNjZItNnMm5tdW61JpnyxeYH5NDDx8)
-- [No Priors](https://www.youtube.com/@NoPriorsPodcast)
-- [Unsupervised Learning](https://www.youtube.com/@RedpointAI)
-- [The MAD Podcast with Matt Turck](https://www.youtube.com/@DataDrivenNYC)
-- [AI & I by Every](https://www.youtube.com/playlist?list=PLuMcoKK9mKgHtW_o9h5sGO2vXrffKHwJL)
-
-### AI Builders on X (25)
-[Andrej Karpathy](https://x.com/karpathy), [Swyx](https://x.com/swyx), [Josh Woodward](https://x.com/joshwoodward), [Kevin Weil](https://x.com/kevinweil), [Peter Yang](https://x.com/petergyang), [Nan Yu](https://x.com/thenanyu), [Madhu Guru](https://x.com/realmadhuguru), [Amanda Askell](https://x.com/AmandaAskell), [Cat Wu](https://x.com/_catwu), [Thariq](https://x.com/trq212), [Google Labs](https://x.com/GoogleLabs), [Amjad Masad](https://x.com/amasad), [Guillermo Rauch](https://x.com/rauchg), [Alex Albert](https://x.com/alexalbert__), [Aaron Levie](https://x.com/levie), [Ryo Lu](https://x.com/ryolu_), [Garry Tan](https://x.com/garrytan), [Matt Turck](https://x.com/mattturck), [Zara Zhang](https://x.com/zarazhangrui), [Nikunj Kothari](https://x.com/nikunj), [Peter Steinberger](https://x.com/steipete), [Dan Shipper](https://x.com/danshipper), [Aditya Agarwal](https://x.com/adityaag), [Sam Altman](https://x.com/sama), [Claude](https://x.com/claudeai)
-
-### Official Blogs (2)
-- [Anthropic Engineering](https://www.anthropic.com/engineering) — technical deep-dives from the Anthropic team
-- [Claude Blog](https://claude.com/blog) — product announcements and updates from Claude
-
-## Installation
-
-### OpenClaw
-```bash
-# From ClawhHub (coming soon)
-clawhub install follow-builders
-
-# Or manually
-git clone https://github.com/zarazhangrui/follow-builders.git ~/skills/follow-builders
-cd ~/skills/follow-builders/scripts && npm install
+```
+scripts/
+├── fetch_youtube.py      # 35 YouTube channels via RSS + transcripts
+├── fetch_blogs.py        # Anthropic + Claude blog scraping
+├── prepare_digest.py     # Orchestrator; merges YouTube + blogs + Zara's X feed into one JSON
+├── deliver.py            # Resend email + Obsidian vault delivery
+├── resolve_channels.py   # @handle → UC channel ID resolver (one-time)
+├── run_fetch.sh          # Convenience wrapper
+└── run_deliver.sh        # Convenience wrapper
+config/
+└── my-sources.json       # My 35 channels + 2 blogs + Zara's X feed URL
+prompts/
+├── digest-intro.md       # Overall format
+├── summarize-video.md    # Per-video format
+├── summarize-blogs.md    # Per-blog format
+└── summarize-tweets.md   # Per-builder tweet format
+SKILL.md                  # Manual-trigger skill definition (reference)
+CLAUDE.md                 # Project dev notes
 ```
 
-### Claude Code
+The actual scheduled-task definition (the thing Claude Code runs every morning) lives **outside the repo** at `~/.claude/scheduled-tasks/ai-daily-digest/SKILL.md`, because that file is tied to my specific machine.
+
+## Running it
+
+This fork is not designed to be dropped into someone else's machine — paths, sources, and the Claude Code scheduled task are all hardcoded for my setup. If you want something similar, **start from the upstream repo**, not from this fork.
+
+For my own reference:
+
 ```bash
-git clone https://github.com/zarazhangrui/follow-builders.git ~/.claude/skills/follow-builders
-cd ~/.claude/skills/follow-builders/scripts && npm install
+cd scripts
+python3 prepare_digest.py --lookback-hours 48 > /tmp/digest_data.json
+# Claude Code reads that JSON and generates the Markdown digest
+python3 deliver.py --file /tmp/fb-digest.md
 ```
 
-## Requirements
+## Credit
 
-- An AI agent (OpenClaw, Claude Code, or similar)
-- Internet connection (to fetch the central feed)
-
-That's it. No API keys needed. All content (blog articles + YouTube transcripts + X/Twitter posts)
-is fetched centrally and updated daily.
-
-## How It Works
-
-1. A central feed is updated daily with the latest content from all sources
-   (blog articles via web scraping, YouTube transcripts via Supadata, X/Twitter via official API)
-2. Your agent fetches the feed — one HTTP request, no API keys
-3. Your agent remixes the raw content into a digestible summary using your preferences
-4. The digest is delivered to your messaging app (or shown in-chat)
-
-See [examples/sample-digest.md](examples/sample-digest.md) for what the output looks like.
-
-## Privacy
-
-- No API keys are sent anywhere — all content is fetched centrally
-- If you use Telegram/email delivery, those keys are stored locally in `~/.follow-builders/.env`
-- The skill only reads public content (public blog posts, public YouTube videos, public X posts)
-- Your configuration, preferences, and reading history stay on your machine
+All the original design, curation, and "follow builders, not influencers" philosophy belongs to [Zara Zhang](https://x.com/zarazhangrui). This fork only rearranges her work to fit my own setup.
 
 ## License
 
-MIT
-
+MIT (inherited from upstream).
