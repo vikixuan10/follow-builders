@@ -157,6 +157,61 @@ def extract_claude_blog_links(index_html: str) -> List[Dict[str, str]]:
     ]
 
 
+def _extract_anthropic_path_links(index_html: str, path_prefix: str) -> List[Dict[str, str]]:
+    """
+    Shared extractor for anthropic.com/<prefix>/slug listings (engineering / news / research).
+    Preserves the order links appear in HTML so the caller's [:max] slice gets newest first.
+    """
+    seen = []
+    seen_set = set()
+    pattern = rf'href="({re.escape(path_prefix)}/[\w\-/]+)"'
+    for m in re.finditer(pattern, index_html):
+        path = m.group(1)
+        if path.rstrip("/") == path_prefix:
+            continue
+        if "/page/" in path:
+            continue
+        if path in seen_set:
+            continue
+        seen_set.add(path)
+        seen.append(path)
+    return [
+        {"url": f"https://www.anthropic.com{p}", "slug": p.split("/")[-1]}
+        for p in seen
+    ]
+
+
+def extract_anthropic_news_links(index_html: str) -> List[Dict[str, str]]:
+    return _extract_anthropic_path_links(index_html, "/news")
+
+
+def extract_anthropic_research_links(index_html: str) -> List[Dict[str, str]]:
+    return _extract_anthropic_path_links(index_html, "/research")
+
+
+def extract_transformer_circuits_links(index_html: str) -> List[Dict[str, str]]:
+    """
+    Transformer Circuits index page.
+    Links look like: href="YYYY/slug/index.html" — relative, no leading slash.
+    Preserves HTML order (newest first on the index page).
+    """
+    seen = []
+    seen_set = set()
+    for m in re.finditer(
+        r'href="(20\d{2}/[\w\-]+/index\.html)"',
+        index_html,
+    ):
+        path = m.group(1)
+        if path in seen_set:
+            continue
+        seen_set.add(path)
+        seen.append(path)
+    return [
+        {"url": f"https://transformer-circuits.pub/{p}", "slug": p.split("/")[-2]}
+        for p in seen
+    ]
+
+
 def extract_article_content(html: str) -> Dict[str, Any]:
     """Extract title, date, content from an article page."""
     # Title: <title>Article — Anthropic</title> or h1
@@ -242,9 +297,15 @@ def main() -> int:
             errors.append(f"Could not fetch index: {name}")
             continue
 
-        # Use blog-specific extractor
-        if "anthropic.com" in index_url:
+        # Use blog-specific extractor. Order matters — match more specific paths first.
+        if "anthropic.com/engineering" in index_url:
             links = extract_anthropic_engineering_links(index_html)
+        elif "anthropic.com/news" in index_url:
+            links = extract_anthropic_news_links(index_html)
+        elif "anthropic.com/research" in index_url:
+            links = extract_anthropic_research_links(index_html)
+        elif "transformer-circuits.pub" in index_url:
+            links = extract_transformer_circuits_links(index_html)
         elif "claude.com" in index_url:
             links = extract_claude_blog_links(index_html)
         else:

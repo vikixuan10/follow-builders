@@ -1,5 +1,5 @@
 {
-  "_comment": "Weiwei's personal subscription list. 40 YouTube channels + Zara's X feed (reused) + Anthropic/Claude blogs.",
+  "_comment": "Weiwei's personal subscription list. 42 YouTube channels + Zara's X feed (reused) + 5 blogs (Anthropic Engineering/News/Research, Claude, Transformer Circuits).",
   "youtube_channels": [
     {
       "category": "AI-官方/研究",
@@ -39,21 +39,9 @@
     },
     {
       "category": "AI-研究者/教育",
-      "name": "Andrej Karpathy",
-      "handle": "@AndrejKarpathy",
-      "channelId": "UCXUPKJO5MZQN11PqgIvyuvQ"
-    },
-    {
-      "category": "AI-研究者/教育",
       "name": "Two Minute Papers",
       "handle": "@TwoMinutePapers",
       "channelId": "UCbfYPyITQ-7l4upoX8nvctg"
-    },
-    {
-      "category": "AI-研究者/教育",
-      "name": "Yannic Kilcher",
-      "handle": "@YannicKilcher",
-      "channelId": "UCZHmQk67mSJgfCCTn7xBfew"
     },
     {
       "category": "AI-访谈/播客",
@@ -134,6 +122,36 @@
       "channelId": "UCjIMtrzxYc0lblGhmOgC_CA"
     },
     {
+      "category": "AI-访谈/播客",
+      "name": "20VC with Harry Stebbings",
+      "handle": "@20vc",
+      "channelId": "UC9jkoB5oKe1eAGZ5zOW6iZA"
+    },
+    {
+      "category": "AI-访谈/播客",
+      "name": "a16z",
+      "handle": "@a16z",
+      "channelId": "UCQ1VQj-37kl2yS_VUhfQHsw"
+    },
+    {
+      "category": "AI-访谈/播客",
+      "name": "80,000 Hours",
+      "handle": "@80000Hours",
+      "channelId": "UCafjal1QYJ3rb0Y9xZk1Ezg"
+    },
+    {
+      "category": "AI-访谈/播客",
+      "name": "Big Technology (Alex Kantrowitz)",
+      "handle": "@Alex.kantrowitz",
+      "channelId": "UCye1YedIypHffYb8k6Gp9wg"
+    },
+    {
+      "category": "AI-访谈/播客",
+      "name": "Conversations with Tyler",
+      "handle": "@CowenConvos",
+      "channelId": "UC_AnpBvnhXTcipgGEHLWoOg"
+    },
+    {
       "category": "AI-实操/工程",
       "name": "Matt Pocock",
       "handle": "@mattpocockuk",
@@ -158,16 +176,16 @@
       "channelId": "UChpleBmo18P08aKCIgti38g"
     },
     {
+      "category": "AI-实操/工程",
+      "name": "The Pragmatic Engineer (Gergely Orosz)",
+      "handle": "@mrgergelyorosz",
+      "channelId": "UCPbwhExawYrn9xxI21TFfyw"
+    },
+    {
       "category": "AI-观察/评论",
       "name": "Peter H. Diamandis",
       "handle": "@peterdiamandis",
       "channelId": "UCvxm0qTrGN_1LMYgUaftWyQ"
-    },
-    {
-      "category": "AI-观察/评论",
-      "name": "Zara Zhang",
-      "handle": "@ZaraZhangg",
-      "channelId": "UCdJpnGphFqq48lnb8o80TcQ"
     },
     {
       "category": "商业",
@@ -186,12 +204,6 @@
       "name": "EO",
       "handle": "@eoglobal",
       "channelId": "UClWTCPVi-AU9TeCN6FkGARg"
-    },
-    {
-      "category": "商业",
-      "name": "Eddie Eizner Unfiltered",
-      "handle": "@eddieeizner",
-      "channelId": "UCEIySKPDQjeQD6NVHzN6oqA"
     },
     {
       "category": "商业",
@@ -224,6 +236,24 @@
       "type": "scrape",
       "indexUrl": "https://claude.com/blog",
       "articleBaseUrl": "https://claude.com/blog/"
+    },
+    {
+      "name": "Anthropic News",
+      "type": "scrape",
+      "indexUrl": "https://www.anthropic.com/news",
+      "articleBaseUrl": "https://www.anthropic.com/news/"
+    },
+    {
+      "name": "Anthropic Research",
+      "type": "scrape",
+      "indexUrl": "https://www.anthropic.com/research",
+      "articleBaseUrl": "https://www.anthropic.com/research/"
+    },
+    {
+      "name": "Transformer Circuits",
+      "type": "scrape",
+      "indexUrl": "https://transformer-circuits.pub/",
+      "articleBaseUrl": "https://transformer-circuits.pub/"
     }
   ],
   "zara_x_feed_url": "https://raw.githubusercontent.com/zarazhangrui/follow-builders/main/feed-x.json"

@@ -45,6 +45,7 @@ Output (to stdout): JSON with shape:
 
 import argparse
 import json
+import random
 import re
 import sys
 import time
@@ -87,8 +88,23 @@ MIN_TRANSCRIPT_CHARS = 300  # ~60 seconds of speech ≈ 200-400 chars
 # Preferred transcript languages (in order)
 TRANSCRIPT_LANG_PREF = ["en", "en-US", "en-GB", "zh-Hans", "zh-CN", "zh"]
 
-# Delay between transcript fetches so YouTube doesn't throttle us
-TRANSCRIPT_DELAY_SEC = 0.8
+# 抓字幕之间的随机停顿（秒）。拉长 + 随机化，降低被 YouTube 判定为爬虫而限流的概率。
+# 抓一轮会比原来慢（55 个视频约多花十几分钟），但定时任务在早上跑，无所谓。
+TRANSCRIPT_DELAY_MIN = 5.0
+TRANSCRIPT_DELAY_MAX = 10.0
+
+# 遇到限流（429 / IpBlocked）时的重试次数与退避基数（秒）：15s → 30s。
+TRANSCRIPT_MAX_RETRIES = 2
+RETRY_BACKOFF_BASE = 15.0
+
+# 熔断保护：连续这么多个视频都因限流失败后，判定整个 IP 已被封，
+# 后续视频不再重试也不再等待，直接快速跳过，避免空跑近一小时。
+IP_BLOCK_CIRCUIT_BREAKER = 3
+
+# 熔断后的冷却重试：实测限流多在 15-30 分钟内自愈（2026-09-15 27min、09-18 16min），
+# 所以熔断后不直接放弃，等一段时间再对被跳过的视频补抓一轮，最多补几轮。
+IP_BLOCK_COOLDOWN_SECONDS = 20 * 60
+IP_BLOCK_MAX_COOLDOWN_ROUNDS = 2
 
 # Prune state file entries older than this
 STATE_TTL_DAYS = 14
@@ -145,7 +161,36 @@ def parse_rfc3339(ts: str) -> Optional[datetime]:
 
 # -- Transcript fetching ------------------------------------------------------
 
+def _is_rate_limit_error(err: Optional[str]) -> bool:
+    """限流类错误（IP 被封 / 429）才值得重试；字幕禁用、无字幕等不必重试。"""
+    if not err:
+        return False
+    e = err.lower()
+    return any(k in e for k in ("ipblocked", "429", "too many", "blocking", "requestblocked"))
+
+
 def fetch_transcript(video_id: str) -> Dict[str, Any]:
+    """抓字幕，遇到限流类错误时按指数退避重试若干次。"""
+    result = _fetch_transcript_once(video_id)
+    attempt = 0
+    while (
+        result.get("error")
+        and _is_rate_limit_error(result["error"])
+        and attempt < TRANSCRIPT_MAX_RETRIES
+    ):
+        wait = RETRY_BACKOFF_BASE * (2 ** attempt)
+        print(
+            f"    ⏳ 限流，{wait:.0f}s 后重试 ({attempt + 1}/{TRANSCRIPT_MAX_RETRIES})...",
+            file=sys.stderr,
+            flush=True,
+        )
+        time.sleep(wait)
+        result = _fetch_transcript_once(video_id)
+        attempt += 1
+    return result
+
+
+def _fetch_transcript_once(video_id: str) -> Dict[str, Any]:
     """
     Fetch transcript for a video, preferring English, falling back to Chinese.
     Returns: {"text": str|None, "lang": str|None, "truncated": bool, "error": str|None}
@@ -249,6 +294,7 @@ def main() -> int:
     videos: List[Dict[str, Any]] = []
     errors: List[str] = []
     channels_with_new = 0
+    pending: List[tuple] = []   # (channel, entry) 等待抓字幕的视频
 
     for i, ch in enumerate(channels, 1):
         if not ch.get("channelId"):
@@ -289,40 +335,81 @@ def main() -> int:
 
         channels_with_new += 1
         print(f"  → {len(new_entries)} new video(s)", file=sys.stderr, flush=True)
+        pending.extend((ch, ne) for ne in new_entries)
 
-        for ne in new_entries:
-            vid = ne["video_id"]
-            if args.no_transcripts:
-                transcript_info = {"text": None, "lang": None, "truncated": False, "error": "skipped"}
-            else:
-                transcript_info = fetch_transcript(vid)
-                time.sleep(TRANSCRIPT_DELAY_SEC)
-
-            # Filter out Shorts (≤60s videos with very short transcripts)
-            transcript_text = transcript_info.get("text") or ""
-            if transcript_text and len(transcript_text) < MIN_TRANSCRIPT_CHARS:
-                print(f"    ⏭ Skipped (likely Shorts, {len(transcript_text)} chars): {ne['title'][:50]}", file=sys.stderr)
-                # Still mark as seen so we don't re-check next time
-                if not args.dry_run:
-                    state[vid] = time.time()
-                continue
-
-            videos.append({
-                "channelName": ch["name"],
-                "category": ch["category"],
-                "videoId": vid,
-                "title": ne["title"],
-                "url": f"https://www.youtube.com/watch?v={vid}",
-                "publishedAt": ne["published"].isoformat(),
-                "transcript": transcript_info["text"],
-                "transcriptLang": transcript_info["lang"],
-                "transcriptTruncated": transcript_info["truncated"],
-                "transcriptError": transcript_info["error"],
-            })
-
-            # Mark seen (only if not dry-run)
+    def record(ch: Dict[str, Any], ne: Dict[str, Any], transcript_info: Dict[str, Any]) -> None:
+        """把一个视频写进结果列表并标记已见；疑似 Shorts 的只标记不收录。"""
+        vid = ne["video_id"]
+        transcript_text = transcript_info.get("text") or ""
+        if transcript_text and len(transcript_text) < MIN_TRANSCRIPT_CHARS:
+            print(f"    ⏭ Skipped (likely Shorts, {len(transcript_text)} chars): {ne['title'][:50]}", file=sys.stderr)
             if not args.dry_run:
                 state[vid] = time.time()
+            return
+        videos.append({
+            "channelName": ch["name"],
+            "category": ch["category"],
+            "videoId": vid,
+            "title": ne["title"],
+            "url": f"https://www.youtube.com/watch?v={vid}",
+            "publishedAt": ne["published"].isoformat(),
+            "transcript": transcript_info["text"],
+            "transcriptLang": transcript_info["lang"],
+            "transcriptTruncated": transcript_info["truncated"],
+            "transcriptError": transcript_info["error"],
+        })
+        if not args.dry_run:
+            state[vid] = time.time()
+
+    def transcript_pass(items: List[tuple]) -> List[tuple]:
+        """抓一轮字幕。限流的视频不落结果、攒进 deferred 返回；熔断后剩余的全部 defer。"""
+        deferred: List[tuple] = []
+        consecutive_blocks = 0
+        for idx, (ch, ne) in enumerate(items):
+            info = fetch_transcript(ne["video_id"])
+            if info.get("error") and _is_rate_limit_error(info["error"]):
+                consecutive_blocks += 1
+                deferred.append((ch, ne))
+                if consecutive_blocks >= IP_BLOCK_CIRCUIT_BREAKER:
+                    rest = items[idx + 1:]
+                    deferred.extend(rest)
+                    print(f"  ⛔ 连续 {consecutive_blocks} 次限流，判定 IP 被封，"
+                          f"本轮剩余 {len(rest)} 个视频先搁置", file=sys.stderr, flush=True)
+                    break
+            else:
+                consecutive_blocks = 0
+                record(ch, ne, info)
+            time.sleep(random.uniform(TRANSCRIPT_DELAY_MIN, TRANSCRIPT_DELAY_MAX))
+        return deferred
+
+    def cooldown(seconds: int) -> None:
+        """等限流自愈；每分钟打一行心跳，免得被外层当成卡死。"""
+        remaining = seconds
+        while remaining > 0:
+            step = min(60, remaining)
+            time.sleep(step)
+            remaining -= step
+            print(f"    ⏳ 冷却中，还剩 {remaining // 60} 分钟", file=sys.stderr, flush=True)
+
+    if args.no_transcripts:
+        for ch, ne in pending:
+            record(ch, ne, {"text": None, "lang": None, "truncated": False, "error": "skipped"})
+    else:
+        deferred = transcript_pass(pending)
+        rounds = 0
+        while deferred and rounds < IP_BLOCK_MAX_COOLDOWN_ROUNDS:
+            rounds += 1
+            print(f"  🕒 {len(deferred)} 个视频因限流搁置，等 {IP_BLOCK_COOLDOWN_SECONDS // 60} 分钟后"
+                  f"补抓（第 {rounds}/{IP_BLOCK_MAX_COOLDOWN_ROUNDS} 轮）", file=sys.stderr, flush=True)
+            cooldown(IP_BLOCK_COOLDOWN_SECONDS)
+            deferred = transcript_pass(deferred)
+        if deferred:
+            msg = (f"IP still blocked after {rounds} cooldown round(s); "
+                   f"{len(deferred)} video(s) left without transcript")
+            errors.append(msg)
+            print(f"  ⛔ 冷却 {rounds} 轮后仍限流，{len(deferred)} 个视频放弃字幕", file=sys.stderr, flush=True)
+            for ch, ne in deferred:
+                record(ch, ne, {"text": None, "lang": None, "truncated": False, "error": "skipped_ip_block"})
 
     # Save state
     if not args.dry_run:
