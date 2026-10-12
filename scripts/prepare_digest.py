@@ -164,6 +164,8 @@ def main() -> int:
         result = run_script("fetch_blogs.py", *blog_args)
         if result and "error" not in result:
             blogs_data = result
+            # Per-source problems (index page unreachable, no links matched) used to be dropped here.
+            errors.extend(f"Blogs: {e}" for e in result.get("errors", []))
         else:
             errors.append(f"Blogs: {result.get('error') if result else 'failed'}")
 
