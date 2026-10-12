@@ -463,10 +463,13 @@ def render_video(v, entry, day):
         meta.append(esc(v["category"]))
     if v.get("publishedAt"):
         meta.append(fmt_time(v["publishedAt"], day.tz))
-    parts = ['<article class="voice video" id="%s-v-%s">' % (day.key, esc(v.get("videoId")))]
-    parts.append('<div class="who"><span class="name">%s</span></div>' % esc(v.get("title", "")))
-    parts.append('<div class="stamp">%s</div>' % " · ".join(meta))
-    parts.append('<p class="one">%s</p>' % esc(entry.get("one_line", "")))
+    # 默认折起来：只露标题、频道和时间、一句话；点开才是要点、片段和链接（2026-10-12 Weiwei 选定，
+    # 此前每张都摊开，20 个视频在手机上要滑三十多屏）。
+    parts = ['<details class="fold video" id="%s-v-%s"><summary><span class="sum-text">' % (day.key, esc(v.get("videoId")))]
+    parts.append('<span class="b-title">%s</span>' % esc(v.get("title", "")))
+    parts.append('<span class="b-sub">%s</span>' % " · ".join(meta))
+    parts.append('<span class="v-one">%s</span>' % esc(entry.get("one_line", "")))
+    parts.append('</span></summary><div class="video-body">')
     parts.append('<ul class="points">%s</ul>' % "".join("<li>%s</li>" % esc(p) for p in entry.get("points", [])))
     segs = entry.get("segments", [])
     if segs:
@@ -477,7 +480,7 @@ def render_video(v, entry, day):
                 esc(video_link(v, s["start"])), esc(span), esc(s.get("topic", ""))))
         parts.append("</ul>")
     parts.append('<a class="src" href="%s" target="_blank" rel="noopener">在 YouTube 上观看 ↗</a>' % esc(v.get("url", "")))
-    parts.append("</article>")
+    parts.append("</div></details>")
     return "".join(parts)
 
 
@@ -569,7 +572,7 @@ def render_day(day, hidden):
     if day.videos:
         vh = ['<section class="group" id="%s-videos"><div class="group-head"><h2>视频</h2></div>' % day.key]
         if f["with_sum"]:
-            vh.append('<div class="card">%s</div>' % "".join(
+            vh.append("".join(
                 render_video(v, f["video_edit"][str(v.get("videoId"))], day) for v in f["with_sum"]))
         if f["without"]:
             def why_not(v):
@@ -900,10 +903,13 @@ a{ border-bottom-color:var(--link-line); }
 @media (min-width:768px){ .day{ gap:36px; } }
 .day > .counts{ color:var(--muted); font-size:var(--fs-small); margin-top:-22px; }
 @media (min-width:768px){ .day > .counts{ margin-top:-30px; } }
-.video .one{ color:var(--ink); }
+details.video{ scroll-margin-top:72px; }
+.v-one{ font-size:var(--fs-small); color:var(--ink-soft); line-height:1.6; padding-top:2px; }
+.video-body{ padding:14px 14px 16px; display:flex; flex-direction:column; align-items:flex-start; gap:10px; border-top:1px solid var(--hairline); }
 .segs{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:6px; align-self:stretch; }
-.segs li{ display:flex; gap:10px; align-items:baseline; flex-wrap:wrap; font-size:14px; color:var(--ink-soft); }
-.segs a{ font-variant-numeric:tabular-nums; font-weight:600; font-size:13px; white-space:nowrap; }
+.segs li{ display:flex; gap:12px; align-items:baseline; font-size:14px; color:var(--ink-soft); }
+.segs a{ flex:none; font-variant-numeric:tabular-nums; font-weight:600; font-size:13px; white-space:nowrap; }
+.segs span{ flex:1; min-width:0; }
 """
 
 FONTS = ('<link rel="stylesheet" href="https://fonts.googleapis.com/css2?'
