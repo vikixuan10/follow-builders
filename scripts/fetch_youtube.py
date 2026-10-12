@@ -45,6 +45,7 @@ Output (to stdout): JSON with shape:
 
 import argparse
 import json
+import os
 import random
 import re
 import sys
@@ -70,6 +71,7 @@ SOURCES_PATH = REPO_DIR / "config" / "my-sources.json"
 
 USER_DIR = Path.home() / ".follow-builders"
 STATE_PATH = USER_DIR / "seen-videos.json"
+ENV_PATH = USER_DIR / ".env"
 
 # -- Constants ----------------------------------------------------------------
 
@@ -93,21 +95,78 @@ TRANSCRIPT_LANG_PREF = ["en", "en-US", "en-GB", "zh-Hans", "zh-CN", "zh"]
 TRANSCRIPT_DELAY_MIN = 5.0
 TRANSCRIPT_DELAY_MAX = 10.0
 
-# 遇到限流（429 / IpBlocked）时的重试次数与退避基数（秒）：15s → 30s。
-TRANSCRIPT_MAX_RETRIES = 2
+# 遇到限流（429 / IpBlocked）时只重试一次，等 15 秒。
+TRANSCRIPT_MAX_RETRIES = 1
 RETRY_BACKOFF_BASE = 15.0
 
-# 熔断保护：连续这么多个视频都因限流失败后，判定整个 IP 已被封，
-# 后续视频不再重试也不再等待，直接快速跳过，避免空跑近一小时。
-IP_BLOCK_CIRCUIT_BREAKER = 3
+# 熔断保护：连续这么多个视频都因限流失败后，判定整个 IP 已被拦，
+# 剩下的视频不再请求字幕，只带着标题和链接返回。
+IP_BLOCK_CIRCUIT_BREAKER = 2
 
-# 熔断后的冷却重试：实测限流多在 15-30 分钟内自愈（2026-09-15 27min、09-18 16min），
-# 所以熔断后不直接放弃，等一段时间再对被跳过的视频补抓一轮，最多补几轮。
+# 熔断后不做冷却重试（轮数为 0）。
+# 2026-09-18 加过「等 20 分钟再补抓，最多两轮」，但外层 prepare_digest.py 只给本脚本 10 分钟，
+# 于是每次都在冷却途中被强行终止，连视频列表一起丢掉：9 月 20 日到 10 月 12 日一个视频都没有。
+# 2026-10-12 实测这条宽带的 IP 被字幕接口长期拦截（三周没有自愈，换客户端、换 yt-dlp 都是 429），
+# 冷却没有意义。被拦时尽快结束、保住视频列表，同时少打几次接口，给它恢复的机会。
 IP_BLOCK_COOLDOWN_SECONDS = 20 * 60
-IP_BLOCK_MAX_COOLDOWN_ROUNDS = 2
+IP_BLOCK_MAX_COOLDOWN_ROUNDS = 0
+
+# 走代理时的重试：每次请求都会换一个住宅 IP，所以被拦了马上换 IP 再试，不用久等。
+PROXY_MAX_RETRIES = 3
+PROXY_RETRY_WAIT = 2.0
+# 走代理时每个请求的出口 IP 都不同，连着失败两个视频不代表全被拦，放宽到连续 5 个再放弃。
+PROXY_CIRCUIT_BREAKER = 5
 
 # Prune state file entries older than this
 STATE_TTL_DAYS = 14
+
+
+# -- 字幕请求走不走代理 ---------------------------------------------------------
+# 这条家用宽带的 IP 被 YouTube 字幕接口长期拦截（见上面的说明）。字幕库官方推荐的办法是
+# Webshare 的轮换住宅代理（Rotating Residential），库里有专门的接入方式。
+# 在 ~/.follow-builders/.env 里写上下面两行就会自动启用；不写就直连，和以前一样。
+#   WEBSHARE_PROXY_USERNAME=...
+#   WEBSHARE_PROXY_PASSWORD=...
+# 只有取字幕的请求走代理，查视频列表（RSS）不走，所以流量很小。
+
+_API: Optional[YouTubeTranscriptApi] = None
+USING_PROXY = False
+
+
+def _load_env() -> Dict[str, str]:
+    env: Dict[str, str] = {}
+    if not ENV_PATH.exists():
+        return env
+    try:
+        for line in ENV_PATH.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            env[key.strip()] = value.strip().strip('"').strip("'")
+    except Exception:
+        pass
+    return env
+
+
+def get_api() -> YouTubeTranscriptApi:
+    """整个进程共用一个字幕客户端；有代理账号就走代理。"""
+    global _API, USING_PROXY
+    if _API is not None:
+        return _API
+    env = _load_env()
+    user = os.environ.get("WEBSHARE_PROXY_USERNAME") or env.get("WEBSHARE_PROXY_USERNAME")
+    password = os.environ.get("WEBSHARE_PROXY_PASSWORD") or env.get("WEBSHARE_PROXY_PASSWORD")
+    if user and password:
+        from youtube_transcript_api.proxies import WebshareProxyConfig
+        _API = YouTubeTranscriptApi(
+            proxy_config=WebshareProxyConfig(proxy_username=user, proxy_password=password)
+        )
+        USING_PROXY = True
+    else:
+        _API = YouTubeTranscriptApi()
+        USING_PROXY = False
+    return _API
 
 
 # -- State management ---------------------------------------------------------
@@ -173,14 +232,15 @@ def fetch_transcript(video_id: str) -> Dict[str, Any]:
     """抓字幕，遇到限流类错误时按指数退避重试若干次。"""
     result = _fetch_transcript_once(video_id)
     attempt = 0
+    max_retries = PROXY_MAX_RETRIES if USING_PROXY else TRANSCRIPT_MAX_RETRIES
     while (
         result.get("error")
         and _is_rate_limit_error(result["error"])
-        and attempt < TRANSCRIPT_MAX_RETRIES
+        and attempt < max_retries
     ):
-        wait = RETRY_BACKOFF_BASE * (2 ** attempt)
+        wait = PROXY_RETRY_WAIT if USING_PROXY else RETRY_BACKOFF_BASE * (2 ** attempt)
         print(
-            f"    ⏳ 限流，{wait:.0f}s 后重试 ({attempt + 1}/{TRANSCRIPT_MAX_RETRIES})...",
+            f"    ⏳ 限流，{wait:.0f}s 后重试 ({attempt + 1}/{max_retries})...",
             file=sys.stderr,
             flush=True,
         )
@@ -196,7 +256,7 @@ def _fetch_transcript_once(video_id: str) -> Dict[str, Any]:
     Returns: {"text": str|None, "lang": str|None, "truncated": bool, "error": str|None}
     """
     try:
-        api = YouTubeTranscriptApi()
+        api = get_api()
         transcript_list = api.list(video_id)
     except (TranscriptsDisabled, VideoUnavailable) as e:
         return {"text": None, "lang": None, "truncated": False, "error": type(e).__name__}
@@ -291,6 +351,10 @@ def main() -> int:
     state = load_state()
     cutoff = datetime.now(timezone.utc) - timedelta(hours=args.lookback)
 
+    if not args.no_transcripts:
+        get_api()
+        print("字幕请求：" + ("走 Webshare 代理" if USING_PROXY else "直连（没有配置代理）"), file=sys.stderr, flush=True)
+
     videos: List[Dict[str, Any]] = []
     errors: List[str] = []
     channels_with_new = 0
@@ -370,7 +434,8 @@ def main() -> int:
             if info.get("error") and _is_rate_limit_error(info["error"]):
                 consecutive_blocks += 1
                 deferred.append((ch, ne))
-                if consecutive_blocks >= IP_BLOCK_CIRCUIT_BREAKER:
+                breaker = PROXY_CIRCUIT_BREAKER if USING_PROXY else IP_BLOCK_CIRCUIT_BREAKER
+                if consecutive_blocks >= breaker:
                     rest = items[idx + 1:]
                     deferred.extend(rest)
                     print(f"  ⛔ 连续 {consecutive_blocks} 次限流，判定 IP 被封，"
@@ -404,10 +469,10 @@ def main() -> int:
             cooldown(IP_BLOCK_COOLDOWN_SECONDS)
             deferred = transcript_pass(deferred)
         if deferred:
-            msg = (f"IP still blocked after {rounds} cooldown round(s); "
-                   f"{len(deferred)} video(s) left without transcript")
+            msg = (f"Transcript endpoint is blocking this IP (HTTP 429); "
+                   f"{len(deferred)} video(s) returned without transcript")
             errors.append(msg)
-            print(f"  ⛔ 冷却 {rounds} 轮后仍限流，{len(deferred)} 个视频放弃字幕", file=sys.stderr, flush=True)
+            print(f"  ⛔ 字幕接口拦了这个 IP，{len(deferred)} 个视频只带标题和链接返回", file=sys.stderr, flush=True)
             for ch, ne in deferred:
                 record(ch, ne, {"text": None, "lang": None, "truncated": False, "error": "skipped_ip_block"})
 

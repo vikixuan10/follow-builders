@@ -112,8 +112,12 @@ def save_to_obsidian(digest: str, obsidian_path: str, tz_name: str) -> Optional[
         return None
 
 
-def send_resend_email(digest: str, api_key: str, to_email: str, tz_name: str) -> bool:
-    """Send digest via Resend API. Returns True on success."""
+def send_resend_email(digest: str, api_key: str, to_email: str, tz_name: str,
+                      html_override: Optional[str] = None, subject: Optional[str] = None) -> bool:
+    """Send digest via Resend API. Returns True on success.
+
+    html_override: 给了就直接用它做邮件正文（网页版早报的「概览 + 链接」），不再把 Markdown 转成 HTML。
+    subject: 给了就用它做标题。"""
     try:
         now_local = datetime.now(ZoneInfo(tz_name)) if tz_name else datetime.now()
     except Exception:
@@ -146,6 +150,8 @@ def send_resend_email(digest: str, api_key: str, to_email: str, tz_name: str) ->
 </style></head><body>
 {html_body}
 </body></html>"""
+    if html_override:
+        html_email = html_override
 
     try:
         res = requests.post(
@@ -157,7 +163,7 @@ def send_resend_email(digest: str, api_key: str, to_email: str, tz_name: str) ->
             json={
                 "from": "AI Digest <digest@resend.dev>",
                 "to": [to_email],
-                "subject": f"AI & 商业早报 — {date_str}",
+                "subject": subject or f"AI & 商业早报 — {date_str}",
                 "html": html_email,
                 "text": digest,
             },
@@ -176,6 +182,9 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--file", help="Read digest from file")
     parser.add_argument("--message", help="Digest text as arg")
+    parser.add_argument("--email-html", help="用这个 HTML 文件做邮件正文（不给就把 Markdown 转成 HTML）")
+    parser.add_argument("--subject", help="邮件标题")
+    parser.add_argument("--email-only", action="store_true", help="只发邮件，不存进 Obsidian（发失败通知时用）")
     args = parser.parse_args()
 
     config = load_config()
@@ -192,7 +201,7 @@ def main() -> int:
     results = {"obsidian": None, "email": None}
 
     # Obsidian
-    if method in ("obsidian", "obsidian_and_email"):
+    if method in ("obsidian", "obsidian_and_email") and not args.email_only:
         obsidian_path = delivery.get("obsidianPath")
         if obsidian_path:
             saved = save_to_obsidian(digest, obsidian_path, tz_name)
@@ -209,7 +218,8 @@ def main() -> int:
         elif not to_email:
             results["email"] = {"ok": False, "error": "email not configured"}
         else:
-            ok = send_resend_email(digest, api_key, to_email, tz_name)
+            html_override = Path(args.email_html).read_text(encoding="utf-8") if args.email_html else None
+            ok = send_resend_email(digest, api_key, to_email, tz_name, html_override, args.subject)
             results["email"] = {"ok": ok, "to": to_email}
 
     # Stdout fallback

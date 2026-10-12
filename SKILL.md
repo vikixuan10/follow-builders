@@ -1,6 +1,6 @@
 ---
 name: follow-builders
-description: Weiwei's personalized AI & business daily digest. Monitors 40 YouTube channels (AI + business + leadership), 2 official blogs (Anthropic + Claude), and 25 AI builders on X/Twitter (reusing Zara Zhang's public feed). Generates Chinese summaries with timestamps, delivers via email + Obsidian. Use when user invokes /ai, /digest, or asks for their daily YouTube/AI brief.
+description: Weiwei's personalized AI & business daily digest. Monitors 40 YouTube channels (AI + business + leadership), 2 official blogs (Anthropic + Claude), and 25 AI builders on X/Twitter (reusing Zara Zhang's public feed). Generates a private web page (original posts + Chinese summaries), emails the overview with a link, and archives Markdown to Obsidian. Use when user invokes /ai, /digest, or asks for their daily YouTube/AI brief.
 ---
 
 # Follow Builders — Weiwei's Personal Edition
@@ -39,95 +39,18 @@ Python 3.9+ (user has no Node.js). Dependencies:
 
 ## Content Delivery — Digest Run
 
-This is what runs on the cron schedule, or when the user invokes `/ai`.
+This is what runs on the schedule, or when the user invokes `/ai`.
 
-### Step 1: Run prepare_digest.py
+**The procedure lives in one place only:** `~/.claude/scheduled-tasks/ai-daily-digest/SKILL.md`. Read that file and follow its six steps exactly. Do not follow any older description of the digest format.
 
-```bash
-cd /Users/weiwei/Documents/SKILL/follow-builders/scripts
-python3 prepare_digest.py --lookback-hours 48 2>/dev/null
-```
+In short (since 2026-10-12 the digest is a web page, not a long Markdown email):
 
-This fetches all data and prints a single JSON blob to stdout with:
-- `config` — user preferences (language, timezone, delivery)
-- `youtube.videos[]` — new YouTube videos with transcripts (in format `[MM:SS] text`)
-- `blogs.posts[]` — new blog articles with full content
-- `x.builders[]` — AI builders with their recent tweets (from Zara's feed)
-- `prompts.{digest_intro,summarize_video,summarize_tweets,summarize_blogs,translate}` — remix instructions
-- `totals` — counts
-- `errors[]` — non-fatal issues (IGNORE unless diagnostic)
-
-### Step 2: Check for content
-
-If `totals.youtubeVideos == 0` AND `totals.blogPosts == 0` AND `totals.xTweets == 0`:
-Tell user: "今日没有新的 AI/商业内容，明天再看。" Then stop.
-
-### Step 3: Remix content (Claude's job)
-
-**Your ONLY job is to remix the JSON content into a Markdown digest.** Do NOT fetch anything from the web, visit URLs, or call APIs. Everything is in the JSON.
-
-Follow the prompts in this priority order:
-
-1. **For each YouTube video** (`youtube.videos[]`):
-   - Use the `transcript` field which already contains `[MM:SS] text` timestamps
-   - Group videos by `category` (AI-官方/研究, AI-访谈/播客, etc.)
-   - Include the `url` field in every summary
-   - **跳过 Shorts**（transcript < 300 字的视频）
-   - **必须严格使用以下四个维度，不允许自行发明名称：**
-
-   ```
-   **一句话精髓：** ...（20 字以内）
-   **核心观点：**（至少 5 条，最多 10 条）
-   **最值得看的段落：**（3-5 段，带 [MM:SS] 时间戳）
-   **金句：**（至少 1 条；实在没有写"无突出金句"）
-   ```
-
-2. **For each blog post** (`blogs.posts[]`):
-   - Use the `content` field
-   - Include the `url` field
-   - **必须严格使用以下三个维度，不允许自行发明名称：**
-
-   ```
-   **核心要点：**（至少 5 条，最多 10 条）
-   **关键数字 / 实操细节：**（如果没有写"无关键数字"）
-   **金句：**（至少 1 条；实在没有写"无突出金句"）
-   ```
-
-3. **For each X builder's tweets** (`x.builders[]`): apply `prompts.summarize_tweets`
-   - Process each builder's `tweets[]` array as one cohesive summary
-   - Every tweet MUST include its `url`
-   - **人名加粗放第一行，空一行后写内容，每人之间用 --- 分隔**
-
-4. **Assemble the final digest**: follow `prompts.digest_intro`
-   - Output is Markdown (rendered in Obsidian + email)
-   - Organize by section: YouTube first (grouped by category) → Blogs → X/Twitter
-   - Skip sections with no content (don't output empty headers)
-
-**ABSOLUTE RULES:**
-- Output in **Chinese** (except proper nouns, code, and original-language quotes)
-- **NEVER invent content.** Only use what's in the JSON.
-- **Every item MUST have its source URL.** No URL = don't include.
-- Do NOT visit youtube.com, x.com, or any URL. Everything you need is in the JSON.
-- **NEVER invent your own section headings.** Use exactly the ones specified above (一句话精髓, 核心观点, 最值得看的段落, 金句, 核心要点, 关键数字/实操细节). If you use any other heading names, the digest is WRONG.
-
-### Step 4: Deliver
-
-Save the Markdown digest to a temp file, then call deliver.py:
-
-```bash
-echo "$DIGEST_TEXT" > /tmp/fb-digest.md
-cd /Users/weiwei/Documents/SKILL/follow-builders/scripts
-python3 deliver.py --file /tmp/fb-digest.md
-```
-
-deliver.py reads `~/.follow-builders/config.json` to know:
-- Where the Obsidian vault is (`delivery.obsidianPath`)
-- The email address (`delivery.email`)
-
-And `~/.follow-builders/.env` for:
-- `RESEND_API_KEY=re_xxxxxxx`
-
-If delivery fails, show the digest in the terminal as fallback.
+1. `prepare_digest.py` fetches the data; `build_page.py ingest` stores it as the day's `data.json`.
+2. `build_page.py view` writes the material for the model to read.
+3. The model writes only `edit.json`: topic grouping, Chinese summaries, blog points, paragraph numbers. Original English text is copied into the page by the script, never retyped by the model.
+4. `build_page.py build` validates `edit.json` and generates the page (last 14 days, switchable), a Markdown archive and the email body.
+5. The page is published to Weiwei's private Artifact URL (`page.url` in `~/.follow-builders/config.json`).
+6. `deliver.py` saves the Markdown archive to Obsidian and emails the overview with a link.
 
 ---
 
