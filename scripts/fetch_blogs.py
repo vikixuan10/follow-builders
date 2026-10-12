@@ -22,8 +22,19 @@ Output: JSON to stdout with shape:
       "errors": [...]
     }
 
-Since blog publication is rare (1-3 posts/week), we look back 7 days
-and dedupe via state file at ~/.follow-builders/seen-articles.json.
+Dedupe via state file at ~/.follow-builders/seen-articles.json:
+
+- A URL stays "seen" for as long as it is still listed on the index page
+  (its timestamp is refreshed on every run) and for STATE_TTL_DAYS after it
+  drops off. Before 2026-10-12 the timestamp was never refreshed, so every
+  article came back as "new" once a month.
+- Every link on the index page is considered, in page order; anything not in
+  the state file is new. At most --max-per-blog new articles are fetched per
+  blog per run, the rest wait for the next run.
+- The first time a blog is indexed, only the top --max-per-blog links are
+  fetched; the rest of the page is recorded as seen so the back catalogue
+  doesn't trickle in for days. "baseline:<blog name>" keys in the state file
+  mark blogs that have been through this.
 """
 
 import argparse
@@ -51,6 +62,7 @@ UA = (
 
 MAX_CONTENT_CHARS = 20_000
 STATE_TTL_DAYS = 30
+BASELINE_PREFIX = "baseline:"
 
 
 # -- State management ---------------------------------------------------------
@@ -111,56 +123,11 @@ def strip_html_tags(html: str) -> str:
 
 # -- Blog-specific extractors -------------------------------------------------
 
-def extract_anthropic_engineering_links(index_html: str) -> List[Dict[str, str]]:
-    """
-    Anthropic Engineering index page.
-    Links look like: href="/engineering/slug-name"
-    """
-    # Pattern: href="/engineering/something"
-    links = set()
-    for m in re.finditer(
-        r'href="(/engineering/[\w\-/]+)"',
-        index_html,
-    ):
-        path = m.group(1)
-        # Skip the index page itself and pagination
-        if path.rstrip("/") == "/engineering":
-            continue
-        if "/page/" in path:
-            continue
-        links.add(path)
-    return [
-        {"url": f"https://www.anthropic.com{p}", "slug": p.split("/")[-1]}
-        for p in links
-    ]
-
-
-def extract_claude_blog_links(index_html: str) -> List[Dict[str, str]]:
-    """
-    Claude Blog index page.
-    Links look like: href="/blog/slug-name"
-    """
-    links = set()
-    for m in re.finditer(
-        r'href="(/blog/[\w\-/]+)"',
-        index_html,
-    ):
-        path = m.group(1)
-        if path.rstrip("/") == "/blog":
-            continue
-        if "/page/" in path:
-            continue
-        links.add(path)
-    return [
-        {"url": f"https://claude.com{p}", "slug": p.split("/")[-1]}
-        for p in links
-    ]
-
-
-def _extract_anthropic_path_links(index_html: str, path_prefix: str) -> List[Dict[str, str]]:
+def _extract_anthropic_path_links(index_html: str, path_prefix: str,
+                                  skip_prefixes: tuple = ()) -> List[Dict[str, str]]:
     """
     Shared extractor for anthropic.com/<prefix>/slug listings (engineering / news / research).
-    Preserves the order links appear in HTML so the caller's [:max] slice gets newest first.
+    Preserves the order links appear in HTML (roughly newest first).
     """
     seen = []
     seen_set = set()
@@ -170,6 +137,8 @@ def _extract_anthropic_path_links(index_html: str, path_prefix: str) -> List[Dic
         if path.rstrip("/") == path_prefix:
             continue
         if "/page/" in path:
+            continue
+        if any(path.startswith(sp) for sp in skip_prefixes):
             continue
         if path in seen_set:
             continue
@@ -181,12 +150,44 @@ def _extract_anthropic_path_links(index_html: str, path_prefix: str) -> List[Dic
     ]
 
 
+def extract_anthropic_engineering_links(index_html: str) -> List[Dict[str, str]]:
+    return _extract_anthropic_path_links(index_html, "/engineering")
+
+
 def extract_anthropic_news_links(index_html: str) -> List[Dict[str, str]]:
     return _extract_anthropic_path_links(index_html, "/news")
 
 
 def extract_anthropic_research_links(index_html: str) -> List[Dict[str, str]]:
-    return _extract_anthropic_path_links(index_html, "/research")
+    # /research/team/<name> are team pages, not articles. They sit at the top of
+    # the index and used to take 4 of the 5 slots.
+    return _extract_anthropic_path_links(index_html, "/research", skip_prefixes=("/research/team/",))
+
+
+def extract_claude_blog_links(index_html: str) -> List[Dict[str, str]]:
+    """
+    Claude Blog index page. Around 2026-10-07 the blog moved from
+    claude.com/blog/<slug> to claude.com/resources/articles/<slug>
+    (claude.com/blog now redirects there). Both forms are accepted; an article
+    recorded under the old URL counts as seen via "aliases".
+    """
+    seen = []
+    seen_set = set()
+    for m in re.finditer(r'href="(?:https://claude\.com)?/(blog|resources/articles)/([\w\-]+)/?"', index_html):
+        section, slug = m.group(1), m.group(2)
+        if slug in seen_set:
+            continue
+        seen_set.add(slug)
+        seen.append((section, slug))
+    return [
+        {
+            "url": f"https://claude.com/{section}/{slug}",
+            "slug": slug,
+            "aliases": [f"https://claude.com/{other}/{slug}"
+                        for other in ("blog", "resources/articles") if other != section],
+        }
+        for section, slug in seen
+    ]
 
 
 def extract_transformer_circuits_links(index_html: str) -> List[Dict[str, str]]:
@@ -275,7 +276,7 @@ def extract_article_content(html: str) -> Dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--max-per-blog", type=int, default=5,
-                        help="Max articles to fetch per blog (default: 5)")
+                        help="Max new articles to fetch per blog per run (default: 5)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Don't update state file")
     args = parser.parse_args()
@@ -311,15 +312,28 @@ def main() -> int:
         else:
             links = []
 
-        # Limit to N articles (index page lists newest first)
-        links = links[:args.max_per_blog]
         print(f"  Found {len(links)} article link(s)", file=sys.stderr, flush=True)
+        if not links:
+            # The page loaded but nothing matched: the site layout or URLs changed.
+            errors.append(f"No article links found on index page: {name} ({index_url})")
+            continue
 
-        for link in links:
+        now = time.time()
+        marker = BASELINE_PREFIX + name
+        first_time = marker not in state
+        fetched = 0
+
+        for pos, link in enumerate(links):
             url = link["url"]
-            # Use URL as the dedupe key
-            if url in state:
+            # URL is the dedupe key. Still listed -> refresh, so it never expires while listed.
+            if any(k in state for k in [url] + link.get("aliases", [])):
+                state[url] = now
                 continue
+            if first_time and pos >= args.max_per_blog:
+                state[url] = now  # back catalogue of a blog we haven't indexed before
+                continue
+            if fetched >= args.max_per_blog:
+                continue  # leave for the next run
 
             article_html = fetch_html(url)
             if not article_html:
@@ -338,10 +352,12 @@ def main() -> int:
                 "content": article["content"],
                 "contentTruncated": article["truncated"],
             })
-            if not args.dry_run:
-                state[url] = time.time()
+            fetched += 1
+            state[url] = now
 
             time.sleep(0.5)
+
+        state[marker] = now
 
     if not args.dry_run:
         save_state(state)

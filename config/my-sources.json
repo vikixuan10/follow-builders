@@ -234,8 +234,8 @@
     {
       "name": "Claude Blog",
       "type": "scrape",
-      "indexUrl": "https://claude.com/blog",
-      "articleBaseUrl": "https://claude.com/blog/"
+      "indexUrl": "https://claude.com/resources/articles",
+      "articleBaseUrl": "https://claude.com/resources/articles/"
     },
     {
       "name": "Anthropic News",
