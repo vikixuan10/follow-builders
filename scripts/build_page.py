@@ -350,6 +350,8 @@ def check(day, guard=False):
         for w in LINT:
             if w in (text or ""):
                 e.append("%s里用了「%s」，换一种说法。" % (where, w))
+        if "\u201c" in (text or "") or "\u201d" in (text or ""):
+            e.append("%s里用了弯引号，改成直角引号「」。" % where)
     return e
 
 
