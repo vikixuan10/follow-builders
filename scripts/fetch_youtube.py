@@ -48,6 +48,7 @@ import json
 import os
 import random
 import re
+import signal
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -112,10 +113,27 @@ IP_BLOCK_COOLDOWN_SECONDS = 20 * 60
 IP_BLOCK_MAX_COOLDOWN_ROUNDS = 0
 
 # 走代理时的重试：每次请求都会换一个住宅 IP，所以被拦了马上换 IP 再试，不用久等。
-PROXY_MAX_RETRIES = 3
+# 字幕库自己遇到「被拦」也会换 IP 重试（PROXY_LIBRARY_RETRIES 次），外层只再补一次。
+PROXY_MAX_RETRIES = 1
 PROXY_RETRY_WAIT = 2.0
+PROXY_LIBRARY_RETRIES = 3
 # 走代理时每个请求的出口 IP 都不同，连着失败两个视频不代表全被拦，放宽到连续 5 个再放弃。
 PROXY_CIRCUIT_BREAKER = 5
+# 走代理时视频之间只停一两秒：停顿是为了保护家里的 IP，走代理时每次出口 IP 都不同。
+PROXY_DELAY_MIN = 0.5
+PROXY_DELAY_MAX = 1.5
+
+# 时间上的三道保险（2026-10-14 至 16 日连着三天，取字幕整轮超过外层给的 10 分钟，被整个掐掉，
+# 连视频列表一起丢了。原因是字幕库发请求不设超时，碰上一个不响应的代理出口就一直挂着）：
+REQUEST_TIMEOUT = (10, 25)        # 每个网络请求：连接最多等 10 秒，读数据最多等 25 秒
+PER_VIDEO_TIMEOUT = 60            # 每个视频（含重试）最多 60 秒，超了当作这次没取到，留到下次
+TRANSCRIPT_BUDGET_SECONDS = 6 * 60  # 从脚本启动算起，超过 6 分钟就不再开始取新的字幕
+
+# 同一个频道一次最多取几个视频的字幕（2026-10-16 Weiwei 定）。多出来的只列标题，
+# 也记为已见，不再回来。大会一次上传二十多个演讲时，不至于占满一整页。
+PER_CHANNEL_CAP = 5
+
+LOG_DIR = Path.home() / ".follow-builders" / "logs"
 
 # Prune state file entries older than this
 STATE_TTL_DAYS = 14
@@ -131,6 +149,38 @@ STATE_TTL_DAYS = 14
 
 _API: Optional[YouTubeTranscriptApi] = None
 USING_PROXY = False
+_START = time.time()
+_LOG_FILE = None
+
+
+def log(msg: str) -> None:
+    """进度同时写到屏幕和当天的日志文件（~/.follow-builders/logs/youtube-日期.log），出了问题有据可查。"""
+    global _LOG_FILE
+    print(msg, file=sys.stderr, flush=True)
+    try:
+        if _LOG_FILE is None:
+            LOG_DIR.mkdir(parents=True, exist_ok=True)
+            _LOG_FILE = open(LOG_DIR / ("youtube-%s.log" % datetime.now().strftime("%Y-%m-%d")), "a", encoding="utf-8")
+            _LOG_FILE.write("\n=== %s 开始 ===\n" % datetime.now().strftime("%H:%M:%S"))
+        _LOG_FILE.write("[%5.0fs] %s\n" % (time.time() - _START, msg))
+        _LOG_FILE.flush()
+    except Exception:
+        pass
+
+
+class _TimeoutSession(requests.Session):
+    """给每个请求加上默认超时。字幕库自己不设超时。"""
+    def request(self, *args, **kwargs):
+        kwargs.setdefault("timeout", REQUEST_TIMEOUT)
+        return super().request(*args, **kwargs)
+
+
+class _VideoTimeout(Exception):
+    pass
+
+
+def _on_alarm(signum, frame):
+    raise _VideoTimeout()
 
 
 def _load_env() -> Dict[str, str]:
@@ -160,11 +210,13 @@ def get_api() -> YouTubeTranscriptApi:
     if user and password:
         from youtube_transcript_api.proxies import WebshareProxyConfig
         _API = YouTubeTranscriptApi(
-            proxy_config=WebshareProxyConfig(proxy_username=user, proxy_password=password)
+            proxy_config=WebshareProxyConfig(proxy_username=user, proxy_password=password,
+                                             retries_when_blocked=PROXY_LIBRARY_RETRIES),
+            http_client=_TimeoutSession(),
         )
         USING_PROXY = True
     else:
-        _API = YouTubeTranscriptApi()
+        _API = YouTubeTranscriptApi(http_client=_TimeoutSession())
         USING_PROXY = False
     return _API
 
@@ -225,10 +277,24 @@ def _is_rate_limit_error(err: Optional[str]) -> bool:
     if not err:
         return False
     e = err.lower()
-    return any(k in e for k in ("ipblocked", "429", "too many", "blocking", "requestblocked"))
+    return any(k in e for k in ("ipblocked", "429", "too many", "blocking", "requestblocked", "timeout", "timed out"))
 
 
 def fetch_transcript(video_id: str) -> Dict[str, Any]:
+    """抓字幕，最多 PER_VIDEO_TIMEOUT 秒；超时当作限流处理（留到下次，不标记已见）。"""
+    old = signal.signal(signal.SIGALRM, _on_alarm)
+    signal.alarm(PER_VIDEO_TIMEOUT)
+    try:
+        return _fetch_transcript_with_retries(video_id)
+    except _VideoTimeout:
+        return {"text": None, "lang": None, "truncated": False,
+                "error": "timeout: no answer within %ds (counted as blocked)" % PER_VIDEO_TIMEOUT}
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old)
+
+
+def _fetch_transcript_with_retries(video_id: str) -> Dict[str, Any]:
     """抓字幕，遇到限流类错误时按指数退避重试若干次。"""
     result = _fetch_transcript_once(video_id)
     attempt = 0
@@ -239,11 +305,7 @@ def fetch_transcript(video_id: str) -> Dict[str, Any]:
         and attempt < max_retries
     ):
         wait = PROXY_RETRY_WAIT if USING_PROXY else RETRY_BACKOFF_BASE * (2 ** attempt)
-        print(
-            f"    ⏳ 限流，{wait:.0f}s 后重试 ({attempt + 1}/{max_retries})...",
-            file=sys.stderr,
-            flush=True,
-        )
+        log(f"    ⏳ 限流，{wait:.0f}s 后重试 ({attempt + 1}/{max_retries})...")
         time.sleep(wait)
         result = _fetch_transcript_once(video_id)
         attempt += 1
@@ -353,12 +415,13 @@ def main() -> int:
 
     if not args.no_transcripts:
         get_api()
-        print("字幕请求：" + ("走 Webshare 代理" if USING_PROXY else "直连（没有配置代理）"), file=sys.stderr, flush=True)
+        log("字幕请求：" + ("走 Webshare 代理" if USING_PROXY else "直连（没有配置代理）"))
 
     videos: List[Dict[str, Any]] = []
     errors: List[str] = []
     channels_with_new = 0
     pending: List[tuple] = []   # (channel, entry) 等待抓字幕的视频
+    capped: List[tuple] = []    # 超过每个频道上限的视频：不取字幕，只列标题
 
     for i, ch in enumerate(channels, 1):
         if not ch.get("channelId"):
@@ -399,10 +462,13 @@ def main() -> int:
 
         channels_with_new += 1
         print(f"  → {len(new_entries)} new video(s)", file=sys.stderr, flush=True)
-        pending.extend((ch, ne) for ne in new_entries)
+        new_entries.sort(key=lambda ne: ne["published"], reverse=True)
+        pending.extend((ch, ne) for ne in new_entries[:PER_CHANNEL_CAP])
+        capped.extend((ch, ne) for ne in new_entries[PER_CHANNEL_CAP:])
 
-    def record(ch: Dict[str, Any], ne: Dict[str, Any], transcript_info: Dict[str, Any]) -> None:
-        """把一个视频写进结果列表并标记已见；疑似 Shorts 的只标记不收录。"""
+    def record(ch: Dict[str, Any], ne: Dict[str, Any], transcript_info: Dict[str, Any], mark_seen: bool = True) -> None:
+        """把一个视频写进结果列表并标记已见；疑似 Shorts 的只标记不收录。
+        mark_seen=False：这次被拦或超时、只列了标题的视频，不标记已见，下次运行再试着取字幕。"""
         vid = ne["video_id"]
         transcript_text = transcript_info.get("text") or ""
         if transcript_text and len(transcript_text) < MIN_TRANSCRIPT_CHARS:
@@ -422,7 +488,7 @@ def main() -> int:
             "transcriptTruncated": transcript_info["truncated"],
             "transcriptError": transcript_info["error"],
         })
-        if not args.dry_run:
+        if mark_seen and not args.dry_run:
             state[vid] = time.time()
 
     def transcript_pass(items: List[tuple]) -> List[tuple]:
@@ -430,7 +496,15 @@ def main() -> int:
         deferred: List[tuple] = []
         consecutive_blocks = 0
         for idx, (ch, ne) in enumerate(items):
+            if time.time() - _START > TRANSCRIPT_BUDGET_SECONDS:
+                rest = items[idx:]
+                late.extend(rest)
+                log(f"  ⏱ 已用 {time.time() - _START:.0f} 秒，剩下 {len(rest)} 个视频留到下次再取字幕")
+                break
+            t0 = time.time()
             info = fetch_transcript(ne["video_id"])
+            log(f"    {ch['name']}｜{ne['title'][:50]}｜{time.time() - t0:.1f}s｜"
+                + ("取到字幕" if info.get("text") else ("没取到：" + str(info.get("error"))[:80])))
             if info.get("error") and _is_rate_limit_error(info["error"]):
                 consecutive_blocks += 1
                 deferred.append((ch, ne))
@@ -438,13 +512,15 @@ def main() -> int:
                 if consecutive_blocks >= breaker:
                     rest = items[idx + 1:]
                     deferred.extend(rest)
-                    print(f"  ⛔ 连续 {consecutive_blocks} 次限流，判定 IP 被封，"
-                          f"本轮剩余 {len(rest)} 个视频先搁置", file=sys.stderr, flush=True)
+                    log(f"  ⛔ 连续 {consecutive_blocks} 次限流，判定 IP 被封，本轮剩余 {len(rest)} 个视频先搁置")
                     break
             else:
                 consecutive_blocks = 0
                 record(ch, ne, info)
-            time.sleep(random.uniform(TRANSCRIPT_DELAY_MIN, TRANSCRIPT_DELAY_MAX))
+            if USING_PROXY:
+                time.sleep(random.uniform(PROXY_DELAY_MIN, PROXY_DELAY_MAX))
+            else:
+                time.sleep(random.uniform(TRANSCRIPT_DELAY_MIN, TRANSCRIPT_DELAY_MAX))
         return deferred
 
     def cooldown(seconds: int) -> None:
@@ -455,6 +531,13 @@ def main() -> int:
             time.sleep(step)
             remaining -= step
             print(f"    ⏳ 冷却中，还剩 {remaining // 60} 分钟", file=sys.stderr, flush=True)
+
+    late: List[tuple] = []  # 时间不够、没来得及取字幕的：不收录、不标记已见，下次再取
+
+    for ch, ne in capped:
+        record(ch, ne, {"text": None, "lang": None, "truncated": False, "error": "over_channel_cap"})
+    if capped:
+        log(f"  同一频道超过 {PER_CHANNEL_CAP} 个的 {len(capped)} 个视频只列标题，不取字幕")
 
     if args.no_transcripts:
         for ch, ne in pending:
@@ -472,13 +555,18 @@ def main() -> int:
             msg = (f"Transcript endpoint is blocking this IP (HTTP 429); "
                    f"{len(deferred)} video(s) returned without transcript")
             errors.append(msg)
-            print(f"  ⛔ 字幕接口拦了这个 IP，{len(deferred)} 个视频只带标题和链接返回", file=sys.stderr, flush=True)
+            log(f"  ⛔ 字幕接口拦了这个 IP，{len(deferred)} 个视频只带标题和链接返回")
             for ch, ne in deferred:
-                record(ch, ne, {"text": None, "lang": None, "truncated": False, "error": "skipped_ip_block"})
+                record(ch, ne, {"text": None, "lang": None, "truncated": False, "error": "skipped_ip_block"}, mark_seen=False)
+
+    if late:
+        errors.append(f"Out of time: {len(late)} video(s) left for the next run")
 
     # Save state
     if not args.dry_run:
         save_state(state)
+    log(f"结束：收录 {len(videos)} 个视频，其中有字幕 {sum(1 for v in videos if v.get('transcript'))} 个；"
+        f"留到下次 {len(late)} 个；用时 {time.time() - _START:.0f} 秒")
 
     videos_with_transcript = sum(1 for v in videos if v.get("transcript"))
 

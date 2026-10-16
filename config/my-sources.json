@@ -1,5 +1,5 @@
 {
-  "_comment": "Weiwei's personal subscription list. 42 YouTube channels + Zara's X feed (reused) + 5 blogs (Anthropic Engineering/News/Research, Claude, Transformer Circuits).",
+  "_comment": "Weiwei's personal subscription list: 27 YouTube channels, Zara's X feed (reused), and 7 blogs (Anthropic x5, OpenAI News, Google DeepMind). Trimmed 2026-10-16: dropped channels that only retell news or that she no longer subscribes to.",
   "youtube_channels": [
     {
       "category": "AI-官方/研究",
@@ -36,12 +36,6 @@
       "name": "AI Engineer",
       "handle": "@aiDotEngineer",
       "channelId": "UCLKPca3kwwd-B59HNr-_lvA"
-    },
-    {
-      "category": "AI-研究者/教育",
-      "name": "Two Minute Papers",
-      "handle": "@TwoMinutePapers",
-      "channelId": "UCbfYPyITQ-7l4upoX8nvctg"
     },
     {
       "category": "AI-访谈/播客",
@@ -99,57 +93,15 @@
     },
     {
       "category": "AI-访谈/播客",
-      "name": "Hard Fork",
-      "handle": "@hardfork",
-      "channelId": "UCZcR2SVWaGWNlMqPxvQS3vw"
-    },
-    {
-      "category": "AI-访谈/播客",
       "name": "All-In Podcast",
       "handle": "@allin",
       "channelId": "UCESLZhusAkFfsNsApnjF_Cg"
     },
     {
       "category": "AI-访谈/播客",
-      "name": "AI Explained",
-      "handle": "@aiexplained-official",
-      "channelId": "UCNJ1Ymd5yFuUPtn21xtRbbw"
-    },
-    {
-      "category": "AI-访谈/播客",
       "name": "Every",
       "handle": "@EveryInc",
       "channelId": "UCjIMtrzxYc0lblGhmOgC_CA"
-    },
-    {
-      "category": "AI-访谈/播客",
-      "name": "20VC with Harry Stebbings",
-      "handle": "@20vc",
-      "channelId": "UC9jkoB5oKe1eAGZ5zOW6iZA"
-    },
-    {
-      "category": "AI-访谈/播客",
-      "name": "a16z",
-      "handle": "@a16z",
-      "channelId": "UCQ1VQj-37kl2yS_VUhfQHsw"
-    },
-    {
-      "category": "AI-访谈/播客",
-      "name": "80,000 Hours",
-      "handle": "@80000Hours",
-      "channelId": "UCafjal1QYJ3rb0Y9xZk1Ezg"
-    },
-    {
-      "category": "AI-访谈/播客",
-      "name": "Big Technology (Alex Kantrowitz)",
-      "handle": "@Alex.kantrowitz",
-      "channelId": "UCye1YedIypHffYb8k6Gp9wg"
-    },
-    {
-      "category": "AI-访谈/播客",
-      "name": "Conversations with Tyler",
-      "handle": "@CowenConvos",
-      "channelId": "UC_AnpBvnhXTcipgGEHLWoOg"
     },
     {
       "category": "AI-实操/工程",
@@ -168,24 +120,6 @@
       "name": "AI Jason",
       "handle": "@AIJasonZ",
       "channelId": "UCrXSVX9a1mj8l0CMLwKgMVw"
-    },
-    {
-      "category": "AI-实操/工程",
-      "name": "Matt Wolfe",
-      "handle": "@mreflow",
-      "channelId": "UChpleBmo18P08aKCIgti38g"
-    },
-    {
-      "category": "AI-实操/工程",
-      "name": "The Pragmatic Engineer (Gergely Orosz)",
-      "handle": "@mrgergelyorosz",
-      "channelId": "UCPbwhExawYrn9xxI21TFfyw"
-    },
-    {
-      "category": "AI-观察/评论",
-      "name": "Peter H. Diamandis",
-      "handle": "@peterdiamandis",
-      "channelId": "UCvxm0qTrGN_1LMYgUaftWyQ"
     },
     {
       "category": "商业",
@@ -222,6 +156,12 @@
       "name": "Helen Bryant",
       "handle": "@helenbryant",
       "channelId": "UCzwqqptws5E1y-kT0hgnQjA"
+    },
+    {
+      "category": "AI-研究者/教育",
+      "name": "Yannic Kilcher",
+      "handle": "@YannicKilcher",
+      "channelId": "UCHmD-oSpV0sNfAUnpYpj8KA"
     }
   ],
   "blogs": [
@@ -254,6 +194,23 @@
       "type": "scrape",
       "indexUrl": "https://transformer-circuits.pub/",
       "articleBaseUrl": "https://transformer-circuits.pub/"
+    },
+    {
+      "name": "OpenAI News",
+      "type": "rss",
+      "feedUrl": "https://openai.com/news/rss.xml",
+      "excludeCategories": [
+        "Startup"
+      ],
+      "requireCategory": true,
+      "maxAgeDays": 4,
+      "_note": "客户案例要么没有分类、要么标 Startup，滤掉；其余（Product、Research、Safety、Company 等）都收"
+    },
+    {
+      "name": "Google DeepMind Blog",
+      "type": "rss",
+      "feedUrl": "https://deepmind.google/blog/rss.xml",
+      "maxAgeDays": 4
     }
   ],
   "zara_x_feed_url": "https://raw.githubusercontent.com/zarazhangrui/follow-builders/main/feed-x.json"

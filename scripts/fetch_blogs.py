@@ -42,7 +42,8 @@ import json
 import re
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -92,6 +93,8 @@ def fetch_html(url: str) -> Optional[str]:
         res = requests.get(url, headers={"User-Agent": UA}, timeout=20)
         if res.status_code != 200:
             return None
+        if not res.encoding or res.encoding.lower() in ("iso-8859-1", "latin-1"):
+            res.encoding = "utf-8"
         return res.text
     except Exception:
         return None
@@ -213,6 +216,45 @@ def extract_transformer_circuits_links(index_html: str) -> List[Dict[str, str]]:
     ]
 
 
+def extract_rss_links(xml: str, blog: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    RSS 来源（OpenAI News、Google DeepMind Blog 等，2026-10-16 加）。按订阅源里的顺序（新的在前）返回文章链接。
+    - maxAgeDays：比这更早的条目不看（默认 4 天），订阅源里积压的旧文不会被当成新文章。
+    - requireCategory / excludeCategories：按 <category> 筛。OpenAI 的客户案例要么没有分类、要么标 Startup。
+    """
+    max_age = blog.get("maxAgeDays", 4)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max_age)
+    exclude = set(blog.get("excludeCategories", []))
+    out, seen = [], set()
+    for item in re.findall(r"<item>(.*?)</item>", xml, re.S):
+        m = re.search(r"<link>\s*([^<\s]+)\s*</link>", item)
+        if not m:
+            continue
+        url = m.group(1).strip()
+        if url in seen:
+            continue
+        cats = [c.strip() for c in re.findall(r"<category>(?:<!\[CDATA\[)?([^<\]]+)", item)]
+        if blog.get("requireCategory") and not cats:
+            continue
+        if exclude & set(cats):
+            continue
+        d = re.search(r"<pubDate>([^<]+)</pubDate>", item)
+        try:
+            published = parsedate_to_datetime(d.group(1).strip()) if d else None
+        except Exception:
+            published = None
+        if published is not None and published.tzinfo is None:
+            published = published.replace(tzinfo=timezone.utc)
+        if published is None or published < cutoff:
+            continue
+        seen.add(url)
+        t = re.search(r"<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>", item, re.S)
+        title = re.sub(r"\s+", " ", t.group(1)).strip() if t else ""
+        out.append({"url": url, "slug": url.rstrip("/").split("/")[-1], "published": published.strftime("%Y-%m-%d"),
+                    "title": title.replace("&amp;", "&").replace("&#39;", "'").replace("&quot;", '"')})
+    return out
+
+
 def extract_article_content(html: str) -> Dict[str, Any]:
     """Extract title, date, content from an article page."""
     # Title: <title>Article — Anthropic</title> or h1
@@ -290,7 +332,7 @@ def main() -> int:
 
     for blog in sources.get("blogs", []):
         name = blog["name"]
-        index_url = blog["indexUrl"]
+        index_url = blog.get("feedUrl") if blog.get("type") == "rss" else blog["indexUrl"]
         print(f"Fetching {name}...", file=sys.stderr, flush=True)
 
         index_html = fetch_html(index_url)
@@ -299,7 +341,9 @@ def main() -> int:
             continue
 
         # Use blog-specific extractor. Order matters — match more specific paths first.
-        if "anthropic.com/engineering" in index_url:
+        if blog.get("type") == "rss":
+            links = extract_rss_links(index_html, blog)
+        elif "anthropic.com/engineering" in index_url:
             links = extract_anthropic_engineering_links(index_html)
         elif "anthropic.com/news" in index_url:
             links = extract_anthropic_news_links(index_html)
@@ -315,7 +359,9 @@ def main() -> int:
         print(f"  Found {len(links)} article link(s)", file=sys.stderr, flush=True)
         if not links:
             # The page loaded but nothing matched: the site layout or URLs changed.
-            errors.append(f"No article links found on index page: {name} ({index_url})")
+            # (An RSS feed with nothing in the last few days is normal, not an error.)
+            if blog.get("type") != "rss":
+                errors.append(f"No article links found on index page: {name} ({index_url})")
             continue
 
         now = time.time()
@@ -346,9 +392,9 @@ def main() -> int:
 
             posts.append({
                 "blog": name,
-                "title": article["title"],
+                "title": link.get("title") or re.sub(r"\s+", " ", article["title"]).strip(),
                 "url": url,
-                "publishedAt": article["publishedAt"],
+                "publishedAt": article["publishedAt"] or link.get("published"),
                 "content": article["content"],
                 "contentTruncated": article["truncated"],
             })

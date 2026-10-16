@@ -20,6 +20,7 @@
   "page": {"dir": "<存放每天数据和网页的目录>", "url": "<网页的固定网址>", "keepDays": 14}
 """
 import argparse
+import hashlib
 import html
 import json
 import os
@@ -225,7 +226,75 @@ def model_texts(edit):
             out.append(("视频 %s 的要点" % v.get("id"), p))
         for s in v.get("segments", []):
             out.append(("视频 %s 的片段说明" % v.get("id"), s.get("topic", "")))
+    for i, pk in enumerate(edit.get("picks", []) or [], 1):
+        out.append(("picks 第 %d 条的理由" % i, pk.get("why", "")))
     return out
+
+
+def blog_anchor(day, url):
+    return "%s-b-%s" % (day.key, hashlib.sha1(url.encode("utf-8")).hexdigest()[:8])
+
+
+def resolve_pick(day, ref):
+    """把「今天最值得看」里的一条 ref（帖子编号、博客网址或视频编号）对到页面上的条目。
+    返回 {kind, title, source, anchor}；对不上返回 None。"""
+    ref = str(ref or "").strip()
+    edit = day.edit
+    if ref in day.by_id:
+        b, t = day.by_id[ref]
+        for i, tp in enumerate(edit.get("topics", [])):
+            if any(str(it.get("id")) == ref for it in tp.get("tweets", [])):
+                return {"kind": "帖子", "title": tp.get("title", ""), "source": b["name"], "anchor": "%s-t%d" % (day.key, i + 1)}
+        for it in edit.get("singles", []):
+            if str(it.get("id")) == ref:
+                summ = re.sub(r"^(他|她)(说|认为|提到|指出|表示|写道|分享了|介绍了)[，,：:]?", "", it.get("summary", "")).strip()
+                return {"kind": "帖子", "title": summ[:40] + ("……" if len(summ) > 40 else ""), "source": b["name"],
+                        "anchor": "%s-tw-%s" % (day.key, ref)}
+        return None  # 折叠的帖子不该被选
+    for post in day.posts:
+        if post["url"] == ref:
+            return {"kind": "博客", "title": post.get("title", ""), "source": post.get("blog", ""), "anchor": blog_anchor(day, ref)}
+    for v in day.videos:
+        if str(v.get("videoId")) == ref:
+            ve = next((x for x in edit.get("videos", []) if str(x.get("id")) == ref), None)
+            if not ve or "skip" in ve:
+                return None  # 没写摘要的视频不该被选
+            return {"kind": "视频", "title": v.get("title", ""), "source": v.get("channelName", ""),
+                    "anchor": "%s-v-%s" % (day.key, ref)}
+    return None
+
+
+def pickable_count(day):
+    edit = day.edit
+    n = sum(len(tp.get("tweets", [])) for tp in edit.get("topics", [])) + len(edit.get("singles", []))
+    n += len(day.new_posts())
+    n += sum(1 for v in edit.get("videos", []) if "skip" not in v)
+    return n
+
+
+def check_picks(day):
+    e, picks = [], day.edit.get("picks")
+    need = min(3, pickable_count(day))
+    if picks is None:
+        return ["还没有写 picks（今天最值得看的 3 到 5 件事）。"] if need else []
+    if not isinstance(picks, list):
+        return ["picks 要写成列表。"]
+    if not (need <= len(picks) <= 5):
+        e.append("picks 要写 %d 到 5 条，现在是 %d 条。" % (need, len(picks)))
+    seen = set()
+    for i, pk in enumerate(picks, 1):
+        ref = str(pk.get("ref", "")).strip()
+        if ref in seen:
+            e.append("picks 第 %d 条和前面重复了：%s" % (i, ref))
+        seen.add(ref)
+        if resolve_pick(day, ref) is None:
+            e.append("picks 第 %d 条的 ref 对不上（要填帖子编号、博客网址或视频编号；不能选折叠的帖子和没写摘要的视频）：%s" % (i, ref))
+        why = (pk.get("why") or "").strip()
+        if not why:
+            e.append("picks 第 %d 条没有写为什么值得看。" % i)
+        elif len(why) > 60:
+            e.append("picks 第 %d 条的理由太长（%d 字），60 字以内。" % (i, len(why)))
+    return e
 
 
 def placements(edit):
@@ -303,8 +372,11 @@ def check(day, guard=False):
             continue
         if not (b.get("one_line") or "").strip():
             e.append("博客 %s 没有写一句话。" % p["url"])
-        if not (2 <= len(b.get("points", [])) <= 4):
-            e.append("博客 %s 的要点要写 2 到 4 条。" % p["url"])
+        lo = 3 if guard else 2  # 往期按当时的规矩（2 到 4 条）写的，照样放进页面
+        if len(p.get("content") or "") < 1500:
+            lo = 1  # 正文只取到很短一段时（个别网页结构特殊），不硬凑要点
+        if not (lo <= len(b.get("points", [])) <= 5):
+            e.append("博客 %s 的要点要写 3 到 5 条，每条只讲一件事。" % p["url"])
     for url, b in blog_edit.items():
         post = next((p for p in day.posts if p["url"] == url), None)
         if not post:
@@ -345,6 +417,9 @@ def check(day, guard=False):
                     e.append("视频 %s 的片段时间 %r 写法不对，要写成 MM:SS。" % (vid, s[k]))
             if not s.get("start"):
                 e.append("视频 %s 有片段没有写开始时间。" % vid)
+
+    if guard:
+        e += check_picks(day)
 
     for where, text in model_texts(edit):
         for w in LINT:
@@ -424,7 +499,7 @@ def read_label(post):
     return ("阅读全文 · %d 分钟以上" if post.get("contentTruncated") else "阅读全文 · 约 %d 分钟") % minutes
 
 
-def render_blog(post, entry, dates):
+def render_blog(post, entry, dates, anchor=""):
     body = ['<div class="blog-body">']
     if entry:
         paras = paragraphs(post.get("content"))
@@ -446,10 +521,11 @@ def render_blog(post, entry, dates):
     body.append("</div>")
     title = '<span class="b-title">%s</span>' % esc(post.get("title", ""))
     sub = '<span class="b-sub">%s</span>' % blog_meta(post, dates)
+    aid = (' id="%s"' % anchor) if anchor else ""
     if dates:
-        return '<details class="fold blog"><summary><span class="sum-text">%s%s</span></summary>%s</details>' % (
-            title, sub, "".join(body))
-    return '<article class="card blog"><div class="b-head">%s%s</div>%s</article>' % (title, sub, "".join(body))
+        return '<details class="fold blog"%s><summary><span class="sum-text">%s%s</span></summary>%s</details>' % (
+            aid, title, sub, "".join(body))
+    return '<article class="card blog"%s><div class="b-head">%s%s</div>%s</article>' % (aid, title, sub, "".join(body))
 
 
 def video_link(v, start=None):
@@ -540,6 +616,18 @@ def render_day(day, hidden):
     out = ['<section class="day" data-date="%s" data-label="%s"%s>' % (day.date, day_label(day.date), " hidden" if hidden else "")]
     out.append('<p class="counts">%s</p>' % esc(f["counts"]))
 
+    picks = [(pk, resolve_pick(day, pk.get("ref"))) for pk in (edit.get("picks") or [])]
+    picks = [(pk, r) for pk, r in picks if r]
+    if picks:
+        pl = ['<nav class="overview picks" aria-label="最值得看"><div class="eyebrow">%s</div><ol>'
+              % ("今天最值得看" if not hidden else "当天最值得看")]
+        for pk, r in picks:
+            pl.append('<li><a href="#%s"><span class="pk-kind">%s</span><span class="ov-main">'
+                      '<span class="ov-title">%s</span><span class="ov-who">%s · %s</span></span></a></li>'
+                      % (r["anchor"], r["kind"], esc(r["title"]), esc(r["source"]), esc(pk.get("why", ""))))
+        pl.append("</ol></nav>")
+        out.append("".join(pl))
+
     ov = ['<nav class="overview" aria-label="当日概览"><div class="eyebrow">%s</div><ul>' % ("今日概览" if not hidden else "当日概览")]
     for tp in f["topics"]:
         ov.append('<li><a href="#%s"><span class="ov-main"><span class="ov-title">%s</span>'
@@ -579,14 +667,25 @@ def render_day(day, hidden):
         if f["without"]:
             def why_not(v):
                 ve = f["video_edit"].get(str(v.get("videoId"))) or {}
-                return v.get("channelName", "") + ((" · " + ve["skip"]) if ve.get("skip") else "")
+                err = str(v.get("transcriptError") or "")
+                if ve.get("skip"):
+                    reason = ve["skip"]
+                elif err == "over_channel_cap":
+                    reason = "这个频道今天的视频超过 5 个，只列标题"
+                elif "ip_block" in err:
+                    reason = "这次没取到字幕，下次会再试"
+                else:
+                    reason = ""
+                return v.get("channelName", "") + ((" · " + reason) if reason else "")
             items = "".join('<li><div class="f-head"><span class="name">%s</span><span class="reason">%s</span></div>'
                             '<a class="src" href="%s" target="_blank" rel="noopener">在 YouTube 上观看 ↗</a></li>'
                             % (esc(v.get("title", "")), esc(why_not(v)), esc(v.get("url", "")))
                             for v in f["without"])
             blocked = sum(1 for v in f["without"] if "ip_block" in str(v.get("transcriptError") or ""))
+            capped = sum(1 for v in f["without"] if str(v.get("transcriptError") or "") == "over_channel_cap")
             why = ("YouTube 暂时没让取字幕，所以只能列出标题" if blocked == len(f["without"])
-                   else "没有取到字幕、视频很短，或与主题无关")
+                   else "同一频道当天的视频超过 5 个，多出来的只列标题" if capped == len(f["without"])
+                   else "没有取到字幕、视频很短、与主题无关，或同一频道当天超过 5 个")
             vh.append('<details class="fold"><summary><span class="sum-text"><span class="b-title">%s%d 个视频没有摘要</span>'
                       '<span class="b-sub">%s</span></span></summary>'
                       '<ul class="folded-list">%s</ul></details>'
@@ -597,7 +696,7 @@ def render_day(day, hidden):
     if day.posts:
         blog_edit = dict((b.get("url"), b) for b in edit.get("blogs", []))
         note = "" if f["n_new"] else ('<p class="note">今天没有新文章。获取到的 %d 篇此前都已收录，已折叠，点击可展开。</p>' % f["n_blogs"])
-        cards = "".join(render_blog(p, blog_edit.get(p["url"]), day.seen[p["url"]])
+        cards = "".join(render_blog(p, blog_edit.get(p["url"]), day.seen[p["url"]], blog_anchor(day, p["url"]))
                         for p in sorted(day.posts, key=lambda p: bool(day.seen[p["url"]])))
         out.append('<section class="group" id="%s-blogs"><div class="group-head"><h2>博客</h2>%s</div>%s</section>'
                    % (day.key, note, cards))
@@ -689,6 +788,11 @@ a:hover{ border-color:var(--accent); }
 .hero .counts{ color:var(--muted); font-size:var(--fs-small); }
 
 .overview{ background:var(--paper); border:1px solid var(--hairline); border-radius:8px; padding:14px 16px; display:flex; flex-direction:column; gap:4px; }
+.picks ol{ list-style:none; margin:0; padding:0; }
+.picks li{ border-top:1px solid var(--hairline); }
+.picks li:first-child{ border-top:0; }
+.picks li a{ display:flex; align-items:flex-start; gap:12px; padding:11px 0; border:0; min-height:44px; color:inherit; }
+.pk-kind{ flex:none; font-size:var(--fs-xs); color:var(--accent); border:1px solid var(--hairline-2); padding:1px 8px; border-radius:99px; margin-top:3px; white-space:nowrap; }
 .overview ul{ list-style:none; margin:0; padding:0; }
 .overview li{ border-top:1px solid var(--hairline); }
 .overview li:first-child{ border-top:0; }
@@ -813,6 +917,17 @@ JS = r"""
   applyOrder(get(KEY_O) === 'zh' ? 'zh' : 'orig');
   for (var i = 0; i < obtns.length; i++) obtns[i].addEventListener('click', function(){
     var v = this.getAttribute('data-order'); applyOrder(v); set(KEY_O, v);
+  });
+
+  /* 点「最值得看」或概览里的链接时，目标若在折叠块里，先把它展开 */
+  document.addEventListener('click', function(e){
+    var a = e.target.closest ? e.target.closest('a[href^="#"]') : null;
+    if (!a) return;
+    var el = document.getElementById(a.getAttribute('href').slice(1));
+    while (el) {
+      if (el.tagName === 'DETAILS') el.open = true;
+      el = el.parentElement ? el.parentElement.closest('details') : null;
+    }
   });
 
   document.addEventListener('click', function(e){
@@ -952,6 +1067,12 @@ def render_markdown(day, page_url):
     L = ["# AI 早报 — %s" % day.date, "", "> %s" % f["counts"]]
     if page_url:
         L.append("> 网页版：%s" % page_url)
+    picks = [(pk, resolve_pick(day, pk.get("ref"))) for pk in (edit.get("picks") or [])]
+    picks = [(pk, r) for pk, r in picks if r]
+    if picks:
+        L += ["", "## 今天最值得看", ""]
+        for i, (pk, r) in enumerate(picks, 1):
+            L.append("%d. 【%s】**%s**（%s）：%s" % (i, r["kind"], r["title"], r["source"], pk.get("why", "")))
     L += ["", "## 今日概览", ""]
     for tp in f["topics"]:
         L.append("- **%s**（%s，%d 条）" % (tp["title"], tp["names"], tp["n"]))
@@ -1018,6 +1139,18 @@ def render_markdown(day, page_url):
 
 def render_email(day, page_url):
     f = day_facts(day)
+    picks = [(pk, resolve_pick(day, pk.get("ref"))) for pk in (day.edit.get("picks") or [])]
+    picks = [(pk, r) for pk, r in picks if r]
+    pick_rows = []
+    for i, (pk, r) in enumerate(picks):
+        border = "" if i == 0 else "border-top:1px solid #E3DCCD;"
+        pick_rows.append('<div style="padding:11px 0;%s"><div style="font-size:12px;color:#46656F;font-weight:600">%s · %s</div>'
+                         '<div style="font-weight:600;color:#2B2A28">%s</div>'
+                         '<div style="font-size:13px;color:#45443F">%s</div></div>'
+                         % (border, r["kind"], esc(r["source"]), esc(r["title"]), esc(pk.get("why", ""))))
+    picks_html = ('<div style="font-size:12.5px;letter-spacing:.1em;color:#46656F;font-weight:600;margin-top:18px">今天最值得看</div>'
+                  '<div style="background:#FFFFFF;border:1px solid #E3DCCD;border-radius:8px;padding:4px 16px;margin:8px 0 6px">%s</div>'
+                  % "".join(pick_rows)) if pick_rows else ""
     rows = []
     for i, tp in enumerate(f["topics"]):
         border = "" if i == 0 else "border-top:1px solid #E3DCCD;"
@@ -1032,13 +1165,15 @@ def render_email(day, page_url):
             '<div style="font-size:12.5px;letter-spacing:.1em;color:#46656F;font-weight:600">AI 早报</div>'
             '<h1 style="font-size:20px;line-height:1.4;margin:6px 0 4px;color:#2B2A28">%s</h1>'
             '<div style="font-size:13px;color:#7E7A70">%s</div>'
-            '<div style="background:#FFFFFF;border:1px solid #E3DCCD;border-radius:8px;padding:4px 16px;margin:18px 0 14px">%s</div>'
+            '%s'
+            '<div style="font-size:12.5px;letter-spacing:.1em;color:#46656F;font-weight:600;margin-top:18px">今日概览</div>'
+            '<div style="background:#FFFFFF;border:1px solid #E3DCCD;border-radius:8px;padding:4px 16px;margin:8px 0 14px">%s</div>'
             '<p style="font-size:13px;color:#7E7A70;margin:0 0 22px">%s</p>'
             '<a href="%s" style="display:inline-block;background:#46656F;color:#FFFFFF;text-decoration:none;'
             'padding:12px 24px;border-radius:8px;font-weight:600;font-size:15px">打开今天的早报</a>'
             '<p style="font-size:12px;color:#7E7A70;margin:22px 0 0">这是你的私密页面，要在浏览器里登录 Claude 才能打开。'
             '完整内容也已存进 Obsidian。</p>'
-            '</div></body></html>') % (esc(day_label(day.date)), esc(f["counts"]), "".join(rows) or
+            '</div></body></html>') % (esc(day_label(day.date)), esc(f["counts"]), picks_html, "".join(rows) or
                                        '<div style="padding:11px 0;color:#7E7A70">今天没有成组的话题。</div>',
                                        rest, esc(page_url))
 
