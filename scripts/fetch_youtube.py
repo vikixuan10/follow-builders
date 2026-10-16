@@ -277,7 +277,8 @@ def _is_rate_limit_error(err: Optional[str]) -> bool:
     if not err:
         return False
     e = err.lower()
-    return any(k in e for k in ("ipblocked", "429", "too many", "blocking", "requestblocked", "timeout", "timed out"))
+    return any(k in e for k in ("ipblocked", "429", "too many", "blocking", "requestblocked", "timeout", "timed out",
+                                "max retries exceeded", "proxyerror", "connectionerror", "connection aborted"))
 
 
 def fetch_transcript(video_id: str) -> Dict[str, Any]:

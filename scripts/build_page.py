@@ -413,8 +413,9 @@ def check(day, guard=False):
             e.append("视频 %s 的要点要写 3 到 8 条。" % vid)
         for s in ve.get("segments", []):
             for k in ("start", "end"):
-                if s.get(k) and not re.fullmatch(r"(\d{1,2}:)?\d{1,2}:\d{2}", str(s[k])):
-                    e.append("视频 %s 的片段时间 %r 写法不对，要写成 MM:SS。" % (vid, s[k]))
+                # 字幕里超过 99 分钟的时间写成三位数分钟（如 104:46），照字幕原样写即可
+                if s.get(k) and not re.fullmatch(r"(\d{1,2}:)?\d{1,3}:\d{2}", str(s[k])):
+                    e.append("视频 %s 的片段时间 %r 写法不对，照字幕里的写法写成 MM:SS。" % (vid, s[k]))
             if not s.get("start"):
                 e.append("视频 %s 有片段没有写开始时间。" % vid)
 
