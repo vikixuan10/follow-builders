@@ -72,6 +72,11 @@ SOURCES_PATH = REPO_DIR / "config" / "my-sources.json"
 
 USER_DIR = Path.home() / ".follow-builders"
 STATE_PATH = USER_DIR / "seen-videos.json"
+# 这次运行新记的「已收过」先写到这里，邮件确认发出后才由 build_page.py 并入 STATE_PATH。
+# 后面哪一步失败，这批视频第二天还会再取（2026-10-18 起）。
+STATE_NEW_PATH = USER_DIR / "seen-videos.new.json"
+# 这次没取到字幕、下次再试的视频（标题等信息一并记下，最多留 PENDING_DAYS 天，不受 48 小时回看的限制）。
+PENDING_PATH = USER_DIR / "pending-videos.json"
 ENV_PATH = USER_DIR / ".env"
 
 # -- Constants ----------------------------------------------------------------
@@ -135,6 +140,13 @@ PER_CHANNEL_CAP = 5
 
 LOG_DIR = Path.home() / ".follow-builders" / "logs"
 
+PENDING_DAYS = 7
+# 发布不到这么久就没有字幕的，多半是 YouTube 还没生成自动字幕，下次再试；超过了才算这个视频没有字幕。
+NO_TRANSCRIPT_GRACE_HOURS = 24
+# 确定取不到的：视频不存在、有年龄限制、编号不对。只有这几类（加上取到了字幕）才记为已收过。
+PERMANENT_ERRORS = {"VideoUnavailable", "AgeRestricted", "InvalidVideoId"}
+NO_TRANSCRIPT_ERRORS = {"TranscriptsDisabled", "NoTranscriptFound", "no_transcript"}
+
 # Prune state file entries older than this
 STATE_TTL_DAYS = 14
 
@@ -175,7 +187,8 @@ class _TimeoutSession(requests.Session):
         return super().request(*args, **kwargs)
 
 
-class _VideoTimeout(Exception):
+class _VideoTimeout(BaseException):
+    """继承 BaseException：字幕库内部的 except Exception 拦不住它，60 秒一到一定能停下来。"""
     pass
 
 
@@ -238,9 +251,50 @@ def load_state() -> Dict[str, float]:
 
 
 def save_state(state: Dict[str, float]) -> None:
+    """写到 STATE_NEW_PATH，不直接改正式记录；邮件发出后由 build_page.py 并入。"""
     USER_DIR.mkdir(parents=True, exist_ok=True)
-    with open(STATE_PATH, "w", encoding="utf-8") as f:
+    with open(STATE_NEW_PATH, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2)
+
+
+def load_pending() -> Dict[str, Dict[str, Any]]:
+    try:
+        with open(PENDING_PATH, "r", encoding="utf-8") as f:
+            pending = json.load(f)
+    except Exception:
+        return {}
+    cutoff = time.time() - PENDING_DAYS * 24 * 3600
+    return {vid: p for vid, p in pending.items() if p.get("first", 0) > cutoff}
+
+
+def save_pending(pending: Dict[str, Dict[str, Any]]) -> None:
+    USER_DIR.mkdir(parents=True, exist_ok=True)
+    with open(PENDING_PATH, "w", encoding="utf-8") as f:
+        json.dump(pending, f, ensure_ascii=False, indent=2)
+
+
+def _err(e: BaseException) -> str:
+    """错误写成「类型: 说明的最后 160 个字」，代理的状态码一般在末尾。"""
+    return "%s: %s" % (type(e).__name__, str(e).replace("\n", " ")[-160:])
+
+
+def classify(error: Optional[str]) -> str:
+    """把一次取字幕的结果分类，决定记不记已收过：
+    ok / permanent（确定取不到）/ no_transcript（没有字幕）/ proxy_account（代理账户的问题）/
+    blocked（被拦、超时、连不上）/ temporary（其余，比如 YouTube 改版、字幕库解析失败）。"""
+    if not error:
+        return "ok"
+    name = error.split(":", 1)[0].strip()
+    e = error.lower()
+    if name in PERMANENT_ERRORS:
+        return "permanent"
+    if name in NO_TRANSCRIPT_ERRORS:
+        return "no_transcript"
+    if any(k in e for k in ("402", "407", "payment required", "proxy authentication")):
+        return "proxy_account"
+    if _is_rate_limit_error(error):
+        return "blocked"
+    return "temporary"
 
 
 # -- RSS fetching -------------------------------------------------------------
@@ -301,8 +355,7 @@ def _fetch_transcript_with_retries(video_id: str) -> Dict[str, Any]:
     attempt = 0
     max_retries = PROXY_MAX_RETRIES if USING_PROXY else TRANSCRIPT_MAX_RETRIES
     while (
-        result.get("error")
-        and _is_rate_limit_error(result["error"])
+        classify(result.get("error")) == "blocked"
         and attempt < max_retries
     ):
         wait = PROXY_RETRY_WAIT if USING_PROXY else RETRY_BACKOFF_BASE * (2 ** attempt)
@@ -324,7 +377,7 @@ def _fetch_transcript_once(video_id: str) -> Dict[str, Any]:
     except (TranscriptsDisabled, VideoUnavailable) as e:
         return {"text": None, "lang": None, "truncated": False, "error": type(e).__name__}
     except Exception as e:
-        return {"text": None, "lang": None, "truncated": False, "error": str(e)[:200]}
+        return {"text": None, "lang": None, "truncated": False, "error": _err(e)}
 
     # Try each preferred language
     transcript = None
@@ -351,7 +404,7 @@ def _fetch_transcript_once(video_id: str) -> Dict[str, Any]:
     try:
         entries = transcript.fetch()
     except Exception as e:
-        return {"text": None, "lang": None, "truncated": False, "error": str(e)[:200]}
+        return {"text": None, "lang": None, "truncated": False, "error": _err(e)}
 
     # entries is a FetchedTranscript object with .snippets, each has .text + .start + .duration
     # Convert to "[MM:SS] text" format so the LLM can use timestamps
@@ -412,7 +465,9 @@ def main() -> int:
 
     # Load state
     state = load_state()
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=args.lookback)
+    pending_store = load_pending()
+    now_utc = datetime.now(timezone.utc)
+    cutoff = now_utc - timedelta(hours=args.lookback)
 
     if not args.no_transcripts:
         get_api()
@@ -432,7 +487,7 @@ def main() -> int:
         print(f"[{i}/{len(channels)}] Checking {ch['name']}...", file=sys.stderr, flush=True)
         entries = fetch_channel_rss(ch["channelId"])
         if entries is None:
-            errors.append(f"RSS failed: {ch['name']}")
+            errors.append(f"YouTube：{ch['name']} 的视频列表没取到")
             continue
 
         new_entries = []
@@ -467,15 +522,31 @@ def main() -> int:
         pending.extend((ch, ne) for ne in new_entries[:PER_CHANNEL_CAP])
         capped.extend((ch, ne) for ne in new_entries[PER_CHANNEL_CAP:])
 
+    # 上次没取到字幕的视频（7 天内），这次排在最前面再试；不受 48 小时回看和每频道上限的限制
+    by_name = {c["name"]: c for c in channels}
+    queued = {ne["video_id"] for _, ne in pending + capped}
+    retries: List[tuple] = []
+    for vid, pe in pending_store.items():
+        ch = by_name.get(pe.get("channel"))
+        if not ch or vid in state or vid in queued:
+            continue
+        published = parse_rfc3339(pe.get("published", "")) or now_utc
+        retries.append((ch, {"video_id": vid, "title": pe.get("title", "Untitled"),
+                             "link": pe.get("link", ""), "published": published}))
+    if retries:
+        log(f"  上次没取到字幕的 {len(retries)} 个视频，这次再试")
+    pending = retries + pending
+
     def record(ch: Dict[str, Any], ne: Dict[str, Any], transcript_info: Dict[str, Any], mark_seen: bool = True) -> None:
-        """把一个视频写进结果列表并标记已见；疑似 Shorts 的只标记不收录。
-        mark_seen=False：这次被拦或超时、只列了标题的视频，不标记已见，下次运行再试着取字幕。"""
+        """把一个视频写进结果列表。
+        mark_seen=True：取到了字幕，或者确定取不到，记为已收过（邮件发出后才正式生效），从待补清单里拿掉。
+        mark_seen=False：这次只列标题，放进待补清单，下次运行再试。疑似 Shorts 的只记已收过、不收录。"""
         vid = ne["video_id"]
         transcript_text = transcript_info.get("text") or ""
         if transcript_text and len(transcript_text) < MIN_TRANSCRIPT_CHARS:
             print(f"    ⏭ Skipped (likely Shorts, {len(transcript_text)} chars): {ne['title'][:50]}", file=sys.stderr)
-            if not args.dry_run:
-                state[vid] = time.time()
+            state[vid] = time.time()
+            pending_store.pop(vid, None)
             return
         videos.append({
             "channelName": ch["name"],
@@ -489,11 +560,31 @@ def main() -> int:
             "transcriptTruncated": transcript_info["truncated"],
             "transcriptError": transcript_info["error"],
         })
-        if mark_seen and not args.dry_run:
+        if mark_seen:
             state[vid] = time.time()
+            pending_store.pop(vid, None)
+        else:
+            keep_for_later(ch, ne)
+
+    def keep_for_later(ch: Dict[str, Any], ne: Dict[str, Any]) -> None:
+        old = pending_store.get(ne["video_id"]) or {}
+        pending_store[ne["video_id"]] = {
+            "channel": ch["name"], "title": ne["title"], "link": ne.get("link", ""),
+            "published": ne["published"].isoformat(), "first": old.get("first", time.time()),
+        }
+
+    retry_kinds: Dict[str, int] = {}   # 这次没取到、下次再试的，按错误类型计数
+    proxy_problem: List[str] = []
+
+    def note_retry(info: Dict[str, Any]) -> None:
+        err = str(info.get("error") or "")
+        name = err.split(":", 1)[0].strip() or "未知"
+        retry_kinds[name] = retry_kinds.get(name, 0) + 1
+        if classify(err) == "proxy_account" and not proxy_problem:
+            proxy_problem.append(err[-120:])
 
     def transcript_pass(items: List[tuple]) -> List[tuple]:
-        """抓一轮字幕。限流的视频不落结果、攒进 deferred 返回；熔断后剩余的全部 defer。"""
+        """取一轮字幕。被拦的视频攒进 deferred 返回；连续被拦到熔断线，剩下的全部 defer。"""
         deferred: List[tuple] = []
         consecutive_blocks = 0
         for idx, (ch, ne) in enumerate(items):
@@ -504,36 +595,39 @@ def main() -> int:
                 break
             t0 = time.time()
             info = fetch_transcript(ne["video_id"])
+            kind = classify(info.get("error"))
             log(f"    {ch['name']}｜{ne['title'][:50]}｜{time.time() - t0:.1f}s｜"
-                + ("取到字幕" if info.get("text") else ("没取到：" + str(info.get("error"))[:80])))
-            if info.get("error") and _is_rate_limit_error(info["error"]):
+                + ("取到字幕" if info.get("text") else ("没取到（%s）：%s" % (kind, str(info.get("error"))[-160:]))))
+            if kind in ("blocked", "proxy_account"):
                 consecutive_blocks += 1
-                deferred.append((ch, ne))
+                deferred.append((ch, ne, info))
                 breaker = PROXY_CIRCUIT_BREAKER if USING_PROXY else IP_BLOCK_CIRCUIT_BREAKER
                 if consecutive_blocks >= breaker:
                     rest = items[idx + 1:]
-                    deferred.extend(rest)
-                    log(f"  ⛔ 连续 {consecutive_blocks} 次限流，判定 IP 被封，本轮剩余 {len(rest)} 个视频先搁置")
+                    deferred.extend((c, n, {"error": "skipped_after_blocks"}) for c, n in rest)
+                    log(f"  ⛔ 连续 {consecutive_blocks} 次没取到，本轮剩余 {len(rest)} 个视频先搁置")
                     break
             else:
                 consecutive_blocks = 0
-                record(ch, ne, info)
+                if kind in ("ok", "permanent"):
+                    record(ch, ne, info)
+                elif kind == "no_transcript":
+                    age_h = (now_utc - ne["published"]).total_seconds() / 3600
+                    if age_h >= NO_TRANSCRIPT_GRACE_HOURS:
+                        record(ch, ne, info)
+                    else:
+                        record(ch, ne, info, mark_seen=False)
+                        note_retry(info)
+                else:  # temporary：YouTube 改版、字幕库解析失败等，先列标题，下次再试
+                    record(ch, ne, info, mark_seen=False)
+                    note_retry(info)
             if USING_PROXY:
                 time.sleep(random.uniform(PROXY_DELAY_MIN, PROXY_DELAY_MAX))
             else:
                 time.sleep(random.uniform(TRANSCRIPT_DELAY_MIN, TRANSCRIPT_DELAY_MAX))
         return deferred
 
-    def cooldown(seconds: int) -> None:
-        """等限流自愈；每分钟打一行心跳，免得被外层当成卡死。"""
-        remaining = seconds
-        while remaining > 0:
-            step = min(60, remaining)
-            time.sleep(step)
-            remaining -= step
-            print(f"    ⏳ 冷却中，还剩 {remaining // 60} 分钟", file=sys.stderr, flush=True)
-
-    late: List[tuple] = []  # 时间不够、没来得及取字幕的：不收录、不标记已见，下次再取
+    late: List[tuple] = []  # 时间不够、没来得及取字幕的：这次不收录，放进待补清单，下次再取
 
     for ch, ne in capped:
         record(ch, ne, {"text": None, "lang": None, "truncated": False, "error": "over_channel_cap"})
@@ -542,32 +636,33 @@ def main() -> int:
 
     if args.no_transcripts:
         for ch, ne in pending:
-            record(ch, ne, {"text": None, "lang": None, "truncated": False, "error": "skipped"})
+            record(ch, ne, {"text": None, "lang": None, "truncated": False, "error": "skipped"}, mark_seen=False)
     else:
         deferred = transcript_pass(pending)
-        rounds = 0
-        while deferred and rounds < IP_BLOCK_MAX_COOLDOWN_ROUNDS:
-            rounds += 1
-            print(f"  🕒 {len(deferred)} 个视频因限流搁置，等 {IP_BLOCK_COOLDOWN_SECONDS // 60} 分钟后"
-                  f"补抓（第 {rounds}/{IP_BLOCK_MAX_COOLDOWN_ROUNDS} 轮）", file=sys.stderr, flush=True)
-            cooldown(IP_BLOCK_COOLDOWN_SECONDS)
-            deferred = transcript_pass(deferred)
+        for ch, ne, info in deferred:
+            note_retry(info)
+            record(ch, ne, {"text": None, "lang": None, "truncated": False,
+                            "error": "skipped_ip_block: " + str(info.get("error") or "")[-120:]}, mark_seen=False)
         if deferred:
-            msg = (f"Transcript endpoint is blocking this IP (HTTP 429); "
-                   f"{len(deferred)} video(s) returned without transcript")
-            errors.append(msg)
-            log(f"  ⛔ 字幕接口拦了这个 IP，{len(deferred)} 个视频只带标题和链接返回")
-            for ch, ne in deferred:
-                record(ch, ne, {"text": None, "lang": None, "truncated": False, "error": "skipped_ip_block"}, mark_seen=False)
+            log(f"  ⛔ {len(deferred)} 个视频这次没取到字幕，只带标题和链接返回，下次再试")
+    for ch, ne in late:
+        keep_for_later(ch, ne)
 
+    n_retry = sum(retry_kinds.values())
+    if n_retry:
+        errors.append("YouTube：%d 个视频这次没取到字幕（%s），下次会再试" % (
+            n_retry, "、".join("%s %d 个" % (k, c) for k, c in sorted(retry_kinds.items(), key=lambda kv: -kv[1]))))
+    if proxy_problem:
+        errors.append("YouTube：代理账户可能出了问题（%s），请看 Webshare 后台的流量和续费" % proxy_problem[0])
     if late:
-        errors.append(f"Out of time: {len(late)} video(s) left for the next run")
+        errors.append(f"YouTube：时间不够，{len(late)} 个视频留到下次再取字幕")
 
-    # Save state
+    # Save state（已收过的写到 seen-videos.new.json，邮件发出后才并入正式记录）
     if not args.dry_run:
         save_state(state)
+        save_pending(pending_store)
     log(f"结束：收录 {len(videos)} 个视频，其中有字幕 {sum(1 for v in videos if v.get('transcript'))} 个；"
-        f"留到下次 {len(late)} 个；用时 {time.time() - _START:.0f} 秒")
+        f"留到下次 {n_retry + len(late)} 个；用时 {time.time() - _START:.0f} 秒")
 
     videos_with_transcript = sum(1 for v in videos if v.get("transcript"))
 
