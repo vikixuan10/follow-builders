@@ -112,6 +112,26 @@ class YoutubeFetchTest(unittest.TestCase):
         self.assertIn("LATEVIDEO01", new)
         self.assertNotIn("LATEVIDEO01", pend)
 
+    def test_falls_back_to_channel_page(self):
+        """订阅源取不到时改读频道网页；网页也取不到才报错。"""
+        fy.fetch_channel_rss = lambda cid: None
+        saved = fy.fetch_channel_page
+        fy.fetch_channel_page = lambda cid: [{"published": (self.now - timedelta(hours=5)).isoformat(),
+                                              "link": "https://www.youtube.com/watch?v=PAGEVIDEO01", "title": "网页里的视频"}]
+        try:
+            res, new, pend = self.run_fetch(ok)
+        finally:
+            fy.fetch_channel_page = saved
+        self.assertEqual([v["videoId"] for v in res["videos"]], ["PAGEVIDEO01"])
+        self.assertTrue(any("改读了频道网页" in e for e in res["errors"]))
+
+    def test_relative_time(self):
+        for text, hours in (("5h ago", 5), ("1d ago", 24), ("2 days ago", 48), ("3 weeks ago", 504), ("Streamed 30 minutes ago", 0.5)):
+            got = fy._ago_to_datetime(text)
+            self.assertIsNotNone(got, text)
+            self.assertAlmostEqual((datetime.now(timezone.utc) - got).total_seconds() / 3600, hours, delta=0.1)
+        self.assertIsNone(fy._ago_to_datetime("117K views"))
+
     def test_two_phase_state(self):
         """已收过的先写进 .new 文件，正式记录不动。"""
         helpers.write_json(fy.STATE_PATH, {"OLDSEENVID1": time.time()})

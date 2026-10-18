@@ -314,6 +314,76 @@ def fetch_channel_rss(channel_id: str) -> Optional[List[Dict[str, Any]]]:
         return None
 
 
+CONSENT_COOKIES = {"CONSENT": "YES+cb.20210328-17-p0.en+FX+000", "SOCS": "CAI"}
+_AGO = re.compile(r"(\d+)\s*(seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|wks?|w|months?|mos?|mo|years?|yrs?|y)\b\s*ago", re.I)
+_UNIT_HOURS = {"s": 0, "m": 1 / 60, "h": 1, "d": 24, "w": 24 * 7, "mo": 24 * 30, "y": 24 * 365}
+
+
+def _ago_to_datetime(text: str) -> Optional[datetime]:
+    """「5h ago」「1d ago」「3 weeks ago」→ 大概的发布时间。只到天这一级精度，够 48 小时的回看用。"""
+    m = _AGO.search(text or "")
+    if not m:
+        return None
+    n, unit = int(m.group(1)), m.group(2).lower()
+    if unit.startswith("mo"):
+        key = "mo"
+    elif unit.startswith("mi") or unit == "m":
+        key = "m"
+    else:
+        key = unit[0]
+    return datetime.now(timezone.utc) - timedelta(hours=n * _UNIT_HOURS[key])
+
+
+def fetch_channel_page(channel_id: str) -> Optional[List[Dict[str, Any]]]:
+    """订阅源（RSS）取不到时的备用办法：直接读频道的「视频」网页（2026-10-18 起，那天 YouTube 的
+    订阅源对所有频道都返回 404）。返回的条目格式和订阅源一样：published / link / title。"""
+    url = f"https://www.youtube.com/channel/{channel_id}/videos"
+    try:
+        res = requests.get(url, headers={"User-Agent": UA, "Accept-Language": "en-US,en;q=0.9"},
+                           cookies=CONSENT_COOKIES, timeout=20)
+        if res.status_code != 200:
+            return None
+        m = re.search(r"var ytInitialData = (\{.*?\});</script>", res.text, re.S)
+        if not m:
+            return None
+        data = json.loads(m.group(1))
+    except Exception:
+        return None
+    out: List[Dict[str, Any]] = []
+    seen = set()
+
+    def add(vid, title, when_text):
+        if not vid or vid in seen:
+            return
+        published = _ago_to_datetime(when_text)
+        if not published:
+            return
+        seen.add(vid)
+        out.append({"published": published.isoformat(), "link": f"https://www.youtube.com/watch?v={vid}",
+                    "title": title or "Untitled"})
+
+    def walk(o):
+        if isinstance(o, dict):
+            lv = o.get("lockupViewModel")
+            if isinstance(lv, dict) and lv.get("contentType", "").endswith("VIDEO"):
+                md = (lv.get("metadata") or {}).get("lockupMetadataViewModel") or {}
+                parts = [((p.get("text") or {}).get("content") or "")
+                         for row in ((md.get("metadata") or {}).get("contentMetadataViewModel") or {}).get("metadataRows", [])
+                         for p in row.get("metadataParts", [])]
+                add(lv.get("contentId"), (md.get("title") or {}).get("content"), " ".join(parts))
+            vr = o.get("videoRenderer")
+            if isinstance(vr, dict):
+                title = "".join(r.get("text", "") for r in ((vr.get("title") or {}).get("runs") or []))
+                add(vr.get("videoId"), title, (vr.get("publishedTimeText") or {}).get("simpleText", ""))
+            for x in o.values():
+                walk(x)
+        elif isinstance(o, list):
+            for x in o:
+                walk(x)
+    walk(data)
+    return out or None
+
+
 def parse_rfc3339(ts: str) -> Optional[datetime]:
     """Parse the RSS <published> timestamp into a UTC datetime."""
     try:
@@ -478,6 +548,7 @@ def main() -> int:
     channels_with_new = 0
     pending: List[tuple] = []   # (channel, entry) 等待抓字幕的视频
     capped: List[tuple] = []    # 超过每个频道上限的视频：不取字幕，只列标题
+    used_page: List[str] = []   # 订阅源取不到、改读频道网页的频道
 
     for i, ch in enumerate(channels, 1):
         if not ch.get("channelId"):
@@ -486,8 +557,13 @@ def main() -> int:
 
         print(f"[{i}/{len(channels)}] Checking {ch['name']}...", file=sys.stderr, flush=True)
         entries = fetch_channel_rss(ch["channelId"])
+        if not entries:
+            entries = fetch_channel_page(ch["channelId"])
+            if entries:
+                used_page.append(ch["name"])
+            time.sleep(random.uniform(0.3, 0.8))
         if entries is None:
-            errors.append(f"YouTube：{ch['name']} 的视频列表没取到")
+            errors.append(f"YouTube：{ch['name']} 的视频列表没取到（订阅源和频道网页都没取到）")
             continue
 
         new_entries = []
@@ -648,6 +724,8 @@ def main() -> int:
     for ch, ne in late:
         keep_for_later(ch, ne)
 
+    if used_page:
+        errors.append("YouTube：%d 个频道的订阅源取不到，改读了频道网页（发布时间只精确到天）" % len(used_page))
     n_retry = sum(retry_kinds.values())
     if n_retry:
         errors.append("YouTube：%d 个视频这次没取到字幕（%s），下次会再试" % (
