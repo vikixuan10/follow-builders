@@ -1,33 +1,35 @@
-# CLAUDE.md — follow-builders (Weiwei's fork)
+# CLAUDE.md — follow-builders（Weiwei 的 fork）
 
-## 项目简介
-这是 Weiwei 个人的 AI & 商业每日早报系统，fork 自 Zara Zhang 的 follow-builders。
-用 Python 3.9 重写（原版是 Node.js，Weiwei 的机器没有 Node）。
+每天 08:13 自动生成 AI 早报（私密网页、概览邮件、Obsidian 存档）的脚本仓库。原版是 Zara Zhang 的 follow-builders，这里已全部改成 Python。
 
-## 关键路径
-- 脚本: `scripts/` (Python: fetch_youtube.py, fetch_blogs.py, prepare_digest.py, deliver.py)
-- 频道列表: `config/my-sources.json` (40 个 YouTube 频道，已解析 channelId)
-- Prompts: `prompts/` (中文输出格式)
-- 用户配置: `~/.follow-builders/config.json` + `.env`
-- Obsidian 输出: `/Users/weiwei/Documents/Obsidian/AI-Digest/`
-- 定时任务: `~/.claude/scheduled-tasks/ai-daily-digest/SKILL.md`
+**本文件只写改代码时要守的规矩。** 别的都不在这里：
 
-## 注意事项
-- 不要用 Node.js 写新功能，全部用 Python
-- Python 3.9 兼容性：不能用 `str | None`，要用 `Optional[str]`
-- 爱尔兰在欧盟，YouTube 会弹 GDPR consent wall，需要 consent cookies
-- Zara 的 .js 文件保留作参考，不要删
-- deliver.py 发邮件时会把 Markdown 转 HTML（用 `markdown` 库）
-- 邮件收件人: vikixuan10@gmail.com
+- 现状、等 Weiwei 定的、不要做的：`/Users/weiwei/Documents/Obsidian/AI-Digest/_meta/早报网页/交接.md`（动手前先读完「不要做的」）
+- 做过什么、为什么：同库的 `log.md`
+- 流程怎么走：`~/.claude/scheduled-tasks/ai-daily-digest/SKILL.md`，改流程只改这一份
+- 每个提交为什么这么改：`git log`
 
-## 添加新频道
-1. 编辑 `config/my-sources.json`，加一条 `{"category": "...", "name": "...", "handle": "@xxx", "channelId": null}`
-2. 运行 `python3 scripts/resolve_channels.py`
-3. 下次 digest 自动包含
+## 在哪改，怎么上线
 
-## 测试命令
-```bash
-cd scripts
-python3 fetch_youtube.py --limit-channels 3 --lookback 168 --dry-run --no-transcripts 2>/dev/null
-python3 prepare_digest.py --limit-channels 3 --lookback-hours 168 --dry-run 2>/dev/null | head -50
-```
+- 在旁边的工作目录 `/Users/weiwei/Documents/SKILL/follow-builders-加固`（hardening 分支）改，测试通过后在本目录 `git merge --ff-only hardening` 进 main，再推送。不要直接在 main 上改了等早上的运行来验证。
+- 小改动提交后直接推送（2026-10-16 Weiwei 同意）。
+- 改完写一行进 AI-Digest 库的 `log.md`；现状变了就改交接。
+
+## 测试
+
+- `~/.follow-builders/venv/bin/python -m unittest discover -s tests`，全部离线，不连网络。
+- 验证 YouTube 相关的逻辑一律打桩；真实探测一次只试一个视频，一天最多一两个。
+
+## 运行环境
+
+- 抓取和发邮件用专用环境 `~/.follow-builders/venv`，库的版本固定在 `requirements.txt`；环境坏了运行 `bash scripts/setup_venv.sh` 重建。要加新库，同时改 `requirements.txt`。
+- 定时任务用电脑上的 `python3` 调 `scripts/build_page.py`，所以 `build_page.py` 只能用标准库；需要第三方库的事，由它用专用环境去调别的脚本。
+- 定时任务只运行 `build_page.py` 的固定子命令（`fetch`、`fetch-wait`、`view`、`build`、`deliver`、`fail`），不要给它加新形式的命令，否则会弹批准，早报出不来。
+- 全部用 Python，不用 Node.js（这台电脑没有 Node）。
+- 读 YouTube 频道网页要带同意 cookie（爱尔兰在欧盟，不带会先弹 GDPR 同意页），写法照 `fetch_youtube.py` 里的 `CONSENT_COOKIES`。
+
+## 加减频道
+
+1. 改 `config/my-sources.json`：加一条 `{"category": "...", "name": "...", "handle": "@xxx", "channelId": null}`，或删掉对应的一条。
+2. 加了频道就运行一次 `~/.follow-builders/venv/bin/python scripts/resolve_channels.py`，它只去查还没有频道编号的那几个。
+3. 下一次运行自动生效。
