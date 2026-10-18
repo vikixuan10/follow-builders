@@ -22,6 +22,7 @@ import argparse
 import json
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -108,6 +109,21 @@ def run_script(script_name: str, *args: str) -> Optional[Dict[str, Any]]:
         return {"error": f"{script_name} failed: {e}"}
 
 
+X_STALE_HOURS = 12      # 订阅源的生成时间早于这么久，算还没更新
+X_STALE_RETRIES = 2
+X_STALE_WAIT = 180
+
+
+def feed_is_stale(feed: Dict[str, Any]) -> bool:
+    try:
+        gen = datetime.fromisoformat(str(feed.get("generatedAt")).replace("Z", "+00:00"))
+    except Exception:
+        return False
+    if gen.tzinfo is None:
+        gen = gen.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - gen).total_seconds() > X_STALE_HOURS * 3600
+
+
 def fetch_zara_x_feed(url: str) -> Optional[Dict[str, Any]]:
     try:
         res = requests.get(url, timeout=15)
@@ -151,6 +167,8 @@ def main() -> int:
         result = run_script("fetch_youtube.py", *yt_args)
         if result and "error" not in result:
             youtube_data = result
+            # 单个频道、单个视频的问题（列表没取到、字幕这次没取到、代理账户出错）以前在这里被丢掉了
+            errors.extend(result.get("errors", []))
         else:
             errors.append(f"YouTube: {result.get('error') if result else 'failed'}")
 
@@ -165,7 +183,7 @@ def main() -> int:
         if result and "error" not in result:
             blogs_data = result
             # Per-source problems (index page unreachable, no links matched) used to be dropped here.
-            errors.extend(f"Blogs: {e}" for e in result.get("errors", []))
+            errors.extend(result.get("errors", []))
         else:
             errors.append(f"Blogs: {result.get('error') if result else 'failed'}")
 
@@ -176,6 +194,17 @@ def main() -> int:
         zara_url = sources.get("zara_x_feed_url")
         if zara_url:
             feed = fetch_zara_x_feed(zara_url)
+            # 上游每天大约 06:40 到 07:30（UTC）才更新。取到的还是昨天那份，就等几分钟再取，最多两次；
+            # 还是旧的就记一条错误。昨天的帖子由 build_page.py 的跨天去重挡掉，不会再发一遍。
+            for _ in range(X_STALE_RETRIES):
+                if not feed or not feed_is_stale(feed):
+                    break
+                print("  X 订阅源还没更新，%d 秒后再取" % X_STALE_WAIT, file=sys.stderr, flush=True)
+                time.sleep(X_STALE_WAIT)
+                feed = fetch_zara_x_feed(zara_url) or feed
+            if feed and feed_is_stale(feed):
+                errors.append("X：订阅源还没更新（最近一次生成于 %s UTC），今天可能没有新帖子"
+                              % str(feed.get("generatedAt", "未知"))[:16].replace("T", " "))
             if feed:
                 x_data = {
                     "x": feed.get("x", []),
@@ -186,7 +215,7 @@ def main() -> int:
                     },
                 }
             else:
-                errors.append("Could not fetch Zara's X feed")
+                errors.append("X：帖子的订阅源打不开")
 
     # 4. Prompts
     prompts = {}

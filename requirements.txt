@@ -1,0 +1,7 @@
+# 早报专用 Python 环境（~/.follow-builders/venv）里装的库，版本固定。
+# 重建环境：bash scripts/setup_venv.sh
+requests==2.34.2
+feedparser==6.0.14
+youtube-transcript-api==1.2.4
+Markdown==3.10.3
+defusedxml==0.7.1

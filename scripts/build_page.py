@@ -38,6 +38,11 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 RAW_PATH = Path("/tmp/digest_data.json")       # 抓取结果
 RAW_TMP = Path("/tmp/digest_data.fetching.json")  # 抓取进行中先写到这里
 FETCH_STATE = Path("/tmp/fb-fetch-state.json")
+RUN_DATE = Path("/tmp/fb-run-date.json")   # 这次运行用哪一天：fetch 时写下，之后各步都用它，跨过午夜也不变
+VENV_PY = USER_DIR / "venv" / "bin" / "python"   # 早报专用的 Python 环境（装好了固定版本的库）
+LOG_DIR = USER_DIR / "logs"
+MAX_FETCH_WAITS = 3        # fetch-wait 最多运行这么多次，还没抓完就算失败
+TRANSCRIPT_BUDGET = 400_000  # 素材里所有字幕加起来最多这么多字符，太长时先缩短最长的几个
 WAIT_SECONDS = 540  # fetch-wait 一次最多等这么久，留在 Bash 工具 10 分钟的上限以内
 
 WEEKDAYS = "一二三四五六日"
@@ -612,6 +617,63 @@ def day_facts(day):
             "with_sum": with_sum, "without": without, "video_edit": video_edit, "n_new": n_new, "n_blogs": n_blogs}
 
 
+def translate_error(e):
+    """抓取时的报错大多已是中文；整步失败那几种还是英文，在这里换成一句话。"""
+    e = str(e)
+    m = re.match(r"(YouTube|Blogs): (\w+\.py) (timed out|exited with code \d+|returned invalid JSON|failed)", e)
+    if m:
+        what = "取视频" if m.group(1) == "YouTube" else "取博客"
+        how = {"timed out": "超过 10 分钟没做完，被整个停掉了"}.get(m.group(3), "的程序出错退出了（%s）" % m.group(3))
+        return "%s：%s%s" % ("YouTube" if m.group(1) == "YouTube" else "博客", what, how)
+    if e.startswith("YouTube: failed") or e.startswith("Blogs: failed"):
+        return ("YouTube" if e.startswith("YouTube") else "博客") + "：整步失败"
+    return e
+
+
+def day_counts(data):
+    tweets = sum(len(b.get("tweets", [])) for b in data.get("x", {}).get("builders", []))
+    videos = data.get("youtube", {}).get("videos", [])
+    with_sub = sum(1 for v in videos if len(v.get("transcript") or "") >= MIN_TRANSCRIPT)
+    return {"帖子": tweets, "视频": len(videos), "有字幕": with_sub, "博客": len(data.get("blogs", {}).get("posts", []))}
+
+
+def health_lines(day, pdir):
+    """「今天的抓取情况」：各来源取到多少、和前 7 天平均比、抓取时出了哪些问题。页面、邮件、存档共用。"""
+    now = day_counts(day.data)
+    hist = []
+    for i in range(1, 8):
+        d = (datetime.strptime(day.date, "%Y-%m-%d") - timedelta(days=i)).strftime("%Y-%m-%d")
+        try:
+            hist.append(day_counts(json.loads((pdir / "days" / d / "data.json").read_text(encoding="utf-8"))))
+        except Exception:
+            continue
+    def avg(k):
+        return (sum(h[k] for h in hist) / len(hist)) if hist else None
+    parts = []
+    for k, unit in (("帖子", "条"), ("视频", "个"), ("博客", "篇")):
+        a_ = avg(k)
+        txt = "%s %d %s" % (k, now[k], unit)
+        if k == "视频" and now["视频"]:
+            txt += "（%d 个有字幕）" % now["有字幕"]
+        if a_ is not None:
+            txt += "，前几天平均 %.0f" % a_
+        parts.append(txt)
+    lines = ["；".join(parts) + "。"]
+    warn = []
+    for k in ("帖子", "视频"):
+        a_ = avg(k)
+        if now[k] == 0 and (a_ is None or a_ >= 1):
+            warn.append("今天%s一个都没有" % ("帖子" if k == "帖子" else "视频"))
+        elif a_ and a_ >= 5 and now[k] < a_ * 0.3:
+            warn.append("今天%s比平时少很多" % k)
+    problems = [translate_error(e) for e in day.data.get("errors", []) if not str(e).startswith("Prompt missing")]
+    for w in warn + problems:
+        lines.append("· " + w)
+    if not warn and not problems:
+        lines.append("· 各来源都正常，没有报错。")
+    return lines, bool(warn or problems)
+
+
 def render_day(day, hidden):
     edit, roles, f = day.edit, day.edit.get("roles", {}), day_facts(day)
     out = ['<section class="day" data-date="%s" data-label="%s"%s>' % (day.date, day_label(day.date), " hidden" if hidden else "")]
@@ -712,6 +774,12 @@ def render_day(day, hidden):
     when = ("数据更新于 %d 月 %d 日 %02d:%02d。" % (gen.month, gen.day, gen.hour, gen.minute)) if gen else ""
     out.append('<footer class="site-footer">英文原文由程序原样引用，未作改动。话题分组、摘要和要点由 AI 生成；'
                '摘要是转述，不是逐句翻译。%s</footer>' % when)
+    hl = getattr(day, "health", None)
+    if hl:
+        lines, bad = hl
+        out.append('<section class="group health%s" id="%s-health"><div class="eyebrow">%s</div>%s</section>'
+                   % (" warn" if bad else "", day.key, "今天的抓取情况" if not hidden else "当天的抓取情况",
+                      "".join("<p>%s</p>" % esc(x) for x in lines)))
     out.append("</section>")
     return "".join(out)
 
@@ -789,6 +857,9 @@ a:hover{ border-color:var(--accent); }
 .hero .counts{ color:var(--muted); font-size:var(--fs-small); }
 
 .overview{ background:var(--paper); border:1px solid var(--hairline); border-radius:8px; padding:14px 16px; display:flex; flex-direction:column; gap:4px; }
+.health{ font-size:var(--fs-small); color:var(--muted); border-top:1px solid var(--hairline); padding-top:12px; }
+.health p{ margin:0; color:var(--muted); }
+.health.warn .eyebrow{ color:#9B4A3A; }
 .picks ol{ list-style:none; margin:0; padding:0; }
 .picks li{ border-top:1px solid var(--hairline); }
 .picks li:first-child{ border-top:0; }
@@ -1132,11 +1203,25 @@ def render_markdown(day, page_url):
         for it in edit["folded"]:
             b, t = day.by_id[str(it["id"])]
             L += ["- %s（%s）：[查看原帖](%s)" % (b["name"], it.get("reason", ""), t["url"])]
+    hl = getattr(day, "health", None)
+    if hl:
+        L += ["", "## 抓取情况", ""] + hl[0]
     L += ["", "---", "", "英文原文由程序原样引用，未作改动。话题分组、摘要和要点由 AI 生成；摘要是转述，不是逐句翻译。", ""]
     return "\n".join(L)
 
 
 # ---------- 邮件正文 ----------
+
+def health_html(day):
+    hl = getattr(day, "health", None)
+    if not hl:
+        return ""
+    lines, bad = hl
+    color = "#9B4A3A" if bad else "#46656F"
+    return ('<div style="margin-top:22px;padding-top:12px;border-top:1px solid #E3DCCD;font-size:13px;color:#7E7A70">'
+            '<div style="font-weight:600;color:%s;margin-bottom:4px">今天的抓取情况</div>%s</div>'
+            % (color, "".join('<div>%s</div>' % esc(x) for x in lines)))
+
 
 def render_email(day, page_url):
     f = day_facts(day)
@@ -1172,17 +1257,62 @@ def render_email(day, page_url):
             '<p style="font-size:13px;color:#7E7A70;margin:0 0 22px">%s</p>'
             '<a href="%s" style="display:inline-block;background:#46656F;color:#FFFFFF;text-decoration:none;'
             'padding:12px 24px;border-radius:8px;font-weight:600;font-size:15px">打开今天的早报</a>'
+            '%s'
             '<p style="font-size:12px;color:#7E7A70;margin:22px 0 0">这是你的私密页面，要在浏览器里登录 Claude 才能打开。'
             '完整内容也已存进 Obsidian。</p>'
             '</div></body></html>') % (esc(day_label(day.date)), esc(f["counts"]), picks_html, "".join(rows) or
                                        '<div style="padding:11px 0;color:#7E7A70">今天没有成组的话题。</div>',
-                                       rest, esc(page_url))
+                                       rest, esc(page_url), health_html(day))
 
 
 # ---------- 子命令 ----------
 
 def today_str(cfg):
     return datetime.now(get_tz(cfg)).strftime("%Y-%m-%d")
+
+
+def run_date(cfg, a=None):
+    """这次运行用哪一天：命令里给了就用给的；否则用 fetch 时记下的日期（20 小时内有效）；再否则用今天。
+    这样一次运行跨过午夜，各步仍然用同一个日期。"""
+    if a is not None and getattr(a, "date", None):
+        return a.date
+    try:
+        st = json.loads(RUN_DATE.read_text(encoding="utf-8"))
+        if time.time() - st.get("at", 0) < 20 * 3600 and re.fullmatch(r"\d{4}-\d{2}-\d{2}", st.get("date", "")):
+            return st["date"]
+    except Exception:
+        pass
+    return today_str(cfg)
+
+
+def run_state():
+    try:
+        return json.loads(RUN_DATE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_run_state(**kw):
+    st = run_state()
+    st.update(kw)
+    RUN_DATE.write_text(json.dumps(st, ensure_ascii=False), encoding="utf-8")
+
+
+def worker_python():
+    """抓取和发邮件用早报专用的 Python 环境，不受电脑上 python3 升级的影响；没有就退回当前解释器。"""
+    return str(VENV_PY) if VENV_PY.exists() else sys.executable
+
+
+def env_problem():
+    """专用环境能不能用：能导入早报要用的几个库就返回空字符串，否则返回问题说明。"""
+    try:
+        r = subprocess.run([worker_python(), "-c", "import requests, feedparser, youtube_transcript_api, markdown"],
+                           capture_output=True, text=True, timeout=120)
+    except Exception as e:
+        return "%s: %s" % (type(e).__name__, e)
+    if r.returncode == 0:
+        return ""
+    return ((r.stderr or "").strip().splitlines() or ["未知原因"])[-1]
 
 
 def merge_data(old, new):
@@ -1212,23 +1342,53 @@ def merge_data(old, new):
             elif v.get("transcript") and not videos[pos[vid]].get("transcript"):
                 videos[pos[vid]] = v  # 之前没拿到字幕，这次拿到了，用新的
     errors = new.get("errors", [])
-    if videos:  # 之前抓到过视频，就不再报「没抓到」
-        errors = [x for x in errors if not x.lower().startswith("youtube")]
+    if videos:  # 之前抓到过视频，就不再报「整步没抓到」；单个视频的问题照样保留
+        errors = [x for x in errors if not (x.startswith("YouTube:") and any(k in x for k in ("timed out", "exited", "failed")))]
     return {"generatedAt": new.get("generatedAt") or old.get("generatedAt"),
             "x": {"builders": [builders[h] for h in order]}, "blogs": {"posts": posts},
             "youtube": {"videos": videos}, "errors": errors}
 
 
+def recent_tweet_ids(cfg, date, days=7):
+    """前几天（不含当天）的数据里出现过的帖子编号。X 订阅源晚更新时会把前一天的帖子再给一遍。"""
+    ids = set()
+    ddir = page_dir(cfg) / "days"
+    if not ddir.exists():
+        return ids
+    for d in sorted(p.name for p in ddir.iterdir() if p.is_dir() and re.fullmatch(r"\d{4}-\d{2}-\d{2}", p.name)):
+        if d >= date:
+            continue
+        if (datetime.strptime(date, "%Y-%m-%d") - datetime.strptime(d, "%Y-%m-%d")).days > days:
+            continue
+        try:
+            data = json.loads((ddir / d / "data.json").read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        for b in data.get("x", {}).get("builders", []):
+            ids |= set(str(t.get("id")) for t in b.get("tweets", []))
+    return ids
+
+
 def cmd_ingest(a, cfg):
     raw = json.loads(Path(a.raw).read_text(encoding="utf-8"))
-    date = a.date or today_str(cfg)
+    date = run_date(cfg, a)
     ddir = page_dir(cfg) / "days" / date
     ddir.mkdir(parents=True, exist_ok=True)
+    seen_ids, dropped = recent_tweet_ids(cfg, date), 0
+    builders = []
+    for b in raw.get("x", {}).get("builders", []):
+        keep = [t for t in b.get("tweets", []) if str(t.get("id")) not in seen_ids]
+        dropped += len(b.get("tweets", [])) - len(keep)
+        if keep:
+            builders.append(dict(b, tweets=keep))
+    raw_errors = [x for x in raw.get("errors", []) if not x.startswith("Prompt missing")]
+    if dropped:
+        raw_errors.append("X：%d 条帖子前几天已经发过，这次去掉了" % dropped)
     new = {"generatedAt": raw.get("generatedAt"),
-           "x": {"builders": raw.get("x", {}).get("builders", [])},
+           "x": {"builders": builders},
            "blogs": {"posts": raw.get("blogs", {}).get("posts", [])},
            "youtube": {"videos": raw.get("youtube", {}).get("videos", [])},
-           "errors": [x for x in raw.get("errors", []) if not x.startswith("Prompt missing")]}
+           "errors": raw_errors}
     path = ddir / "data.json"
     if path.exists():
         new = merge_data(json.loads(path.read_text(encoding="utf-8")), new)
@@ -1236,7 +1396,8 @@ def cmd_ingest(a, cfg):
     n = sum(len(b.get("tweets", [])) for b in new["x"]["builders"])
     print(json.dumps({"date": date, "帖子": n, "博客": len(new["blogs"]["posts"]),
                       "视频": len(new["youtube"]["videos"]), "data": str(path),
-                      "edit": str(ddir / "edit.json")}, ensure_ascii=False))
+                      "edit": str(ddir / "edit.json"),
+                      "抓取问题": [translate_error(x) for x in new.get("errors", [])] or "无"}, ensure_ascii=False))
 
 
 def load_day(cfg, date, need_edit=True):
@@ -1244,8 +1405,14 @@ def load_day(cfg, date, need_edit=True):
     dpath, epath = ddir / "data.json", ddir / "edit.json"
     if not dpath.exists():
         return None
-    data = json.loads(dpath.read_text(encoding="utf-8"))
-    edit = json.loads(epath.read_text(encoding="utf-8")) if epath.exists() else None
+    try:
+        data = json.loads(dpath.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise ValueError("%s 读不了：%s" % (dpath, e))
+    try:
+        edit = json.loads(epath.read_text(encoding="utf-8")) if epath.exists() else None
+    except Exception as e:
+        raise ValueError("%s 读不了：%s" % (epath, e))
     if need_edit and edit is None:
         return None
     archive = (cfg.get("delivery") or {}).get("obsidianPath")
@@ -1259,15 +1426,68 @@ def load_day(cfg, date, need_edit=True):
     return day
 
 
+def transcript_cap(lengths, budget=TRANSCRIPT_BUDGET):
+    """所有字幕加起来超过 budget 时，算出每个字幕最多留多长（只缩短最长的几个）。不超过就返回 0。"""
+    if sum(lengths) <= budget:
+        return 0
+    lo, hi = 0, max(lengths)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if sum(min(n, mid) for n in lengths) <= budget:
+            lo = mid
+        else:
+            hi = mid - 1
+    return lo
+
+
+def entry_bad(texts):
+    for t in texts:
+        if any(w in (t or "") for w in LINT) or "\u201c" in (t or "") or "\u201d" in (t or ""):
+            return True
+    return False
+
+
+def clean_snapshot(edit):
+    """去掉快照里本身不合格的条目，让这次运行可以改正它们。"""
+    snap = json.loads(json.dumps(edit))
+    topics = []
+    for tp in snap.get("topics", []):
+        if entry_bad([tp.get("title"), tp.get("note")]):
+            continue
+        tp["tweets"] = [it for it in tp.get("tweets", []) if not entry_bad([it.get("summary")])]
+        topics.append(tp)
+    snap["topics"] = topics
+    snap["singles"] = [it for it in snap.get("singles", []) if not entry_bad([it.get("summary")])]
+    snap["folded"] = [it for it in snap.get("folded", []) if not entry_bad([it.get("reason")])]
+    def blog_ok(b):
+        texts = [b.get("one_line")] + list(b.get("points", [])) + [x.get("summary") for x in b.get("passages", [])]
+        return not entry_bad(texts) and 1 <= len(b.get("points", [])) <= 5
+    snap["blogs"] = [b for b in snap.get("blogs", []) if blog_ok(b)]
+    def video_ok(v):
+        if "skip" in v:
+            return not entry_bad([v.get("skip")])
+        texts = [v.get("one_line")] + list(v.get("points", [])) + [x.get("topic") for x in v.get("segments", [])]
+        times_ok = all(re.fullmatch(r"(\d{1,2}:)?\d{1,3}:\d{2}", str(x.get(k))) for x in v.get("segments", [])
+                       for k in ("start", "end") if x.get(k))
+        return not entry_bad(texts) and times_ok and 3 <= len(v.get("points", [])) <= 8
+    snap["videos"] = [v for v in snap.get("videos", []) if video_ok(v)]
+    return snap
+
+
 def cmd_view(a, cfg):
-    date = a.date or today_str(cfg)
+    date = run_date(cfg, a)
     day = load_day(cfg, date, need_edit=False)
     if day is None:
         sys.exit("%s 还没有 data.json，先运行 ingest。" % date)
-    # 给已有的编排留一份快照：build 时用它核对已有条目没有被改动
+    # 给已有的编排留一份快照：build 时用它核对已有条目没有被改动。
+    # 本身就不合格的条目（禁词、条数不对、时间写法不对）不放进快照，这次可以改，不然重跑会卡死。
     epath = page_dir(cfg) / "days" / date / "edit.json"
     if epath.exists():
-        (page_dir(cfg) / "days" / date / "edit.运行前.json").write_text(epath.read_text(encoding="utf-8"), encoding="utf-8")
+        try:
+            snap = clean_snapshot(json.loads(epath.read_text(encoding="utf-8")))
+            (page_dir(cfg) / "days" / date / "edit.运行前.json").write_text(json.dumps(snap, ensure_ascii=False, indent=1), encoding="utf-8")
+        except Exception:
+            pass  # 编排本身坏了：不留快照，这次整份重写
     placed = set()
     for tp in day.edit.get("topics", []):
         placed |= set(str(it.get("id")) for it in tp.get("tweets", []))
@@ -1306,6 +1526,7 @@ def cmd_view(a, cfg):
             L.append("  [%d]（%d 字符）%s" % (i, len(para), para))
         L.append("")
     L += ["", "=== 视频（共 %d 个）===" % len(day.videos), ""]
+    cap = transcript_cap([len(v.get("transcript") or "") for v in day.videos if day.has_transcript(v)])
     for v in day.videos:
         if not day.has_transcript(v):
             L += ["[%s] %s｜%s｜没有字幕或很短（%s）。不用写，脚本会自动列出。" % (
@@ -1313,14 +1534,18 @@ def cmd_view(a, cfg):
             continue
         L.append("[%s] %s｜%s｜%s｜%s｜有字幕，要写" % (
             v.get("videoId"), v.get("channelName"), v.get("category"), v.get("title"), v.get("url")))
-        L += [v.get("transcript") or "", "", "-----", ""]
+        tr = v.get("transcript") or ""
+        if cap and len(tr) > cap:
+            cut = tr.rfind("\n", 0, cap)
+            tr = tr[:cut if cut > 0 else cap] + "\n（字幕很长，这里只给了前面的部分；片段只从这一部分里挑。）"
+        L += [tr, "", "-----", ""]
     out = page_dir(cfg) / "days" / date / "素材.txt"
     out.write_text("\n".join(L), encoding="utf-8")
     print(json.dumps({"date": date, "素材": str(out), "行数": len(L), "字符数": sum(len(x) for x in L)}, ensure_ascii=False))
 
 
 def cmd_build(a, cfg):
-    date = a.date or today_str(cfg)
+    date = run_date(cfg, a)
     pdir = page_dir(cfg)
     page_url = (cfg.get("page") or {}).get("url", "")
     keep = int((cfg.get("page") or {}).get("keepDays", 14))
@@ -1338,21 +1563,34 @@ def cmd_build(a, cfg):
     for d in sorted((p.name for p in (pdir / "days").iterdir() if p.is_dir()), reverse=True):
         if d >= date or len(days) >= keep or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d):
             continue
-        old = load_day(cfg, d)
-        if old is not None and not check(old):
+        try:  # 以前某一天的文件坏了（比如手改时多了一个逗号），只把那一天拿掉，不拖垮整页
+            old = load_day(cfg, d)
+            ok = old is not None and not check(old)
+        except Exception as e:
+            left_out.append("%s（文件读不了：%s）" % (d, str(e)[:120]))
+            continue
+        if ok:
             days.append(old)
         else:
             left_out.append(d)
+
+    for d_ in days:
+        try:
+            d_.health = health_lines(d_, pdir)
+        except Exception:
+            d_.health = None
 
     full, fragment = render_page(days)
     (pdir / "AI早报.html").write_text(full, encoding="utf-8")
     (pdir / "发布用.html").write_text(fragment, encoding="utf-8")
     ddir = pdir / "days" / date
-    (ddir / "digest.md").write_text(render_markdown(today, page_url), encoding="utf-8")
+    md_text = render_markdown(today, page_url)
+    (ddir / "digest.md").write_text(md_text, encoding="utf-8")
     (ddir / "email.html").write_text(render_email(today, page_url), encoding="utf-8")
+    archived = save_archive(cfg, date, md_text)  # 存档在这里就写好，不再排在发布网页之后
     print(json.dumps({"状态": "已生成", "日期": date, "页面里的天数": len(days),
                       "发布用": str(pdir / "发布用.html"), "本地网页": str(pdir / "AI早报.html"),
-                      "存档": str(ddir / "digest.md"), "邮件正文": str(ddir / "email.html"),
+                      "存档": archived, "邮件正文": str(ddir / "email.html"),
                       "网址": page_url,
                       "没放进页面的往期": left_out or "无"}, ensure_ascii=False, indent=1))
 
@@ -1375,10 +1613,21 @@ def cmd_fetch(a, cfg):
                 return
         except Exception:
             pass
+    problem = env_problem()
+    if problem:
+        print("抓取失败：早报专用的 Python 环境用不了（%s）。修复办法：在终端运行 bash %s。"
+              % (problem, SCRIPT_DIR / "setup_venv.sh"))
+        sys.exit(1)
+    date = today_str(cfg)
+    RUN_DATE.write_text(json.dumps({"date": date, "at": time.time()}), encoding="utf-8")
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
     out = open(str(RAW_TMP), "w", encoding="utf-8")
-    proc = subprocess.Popen([sys.executable, str(SCRIPT_DIR / "prepare_digest.py"), "--lookback-hours", "48"],
-                            cwd=str(SCRIPT_DIR), stdout=out, stderr=subprocess.DEVNULL, start_new_session=True)
-    FETCH_STATE.write_text(json.dumps({"pid": proc.pid, "started": time.time(), "date": today_str(cfg)}), encoding="utf-8")
+    err = open(str(LOG_DIR / ("prepare-%s.log" % date)), "a", encoding="utf-8")
+    err.write("\n=== %s 开始抓取 ===\n" % datetime.now().strftime("%H:%M:%S"))
+    err.flush()
+    proc = subprocess.Popen([worker_python(), str(SCRIPT_DIR / "prepare_digest.py"), "--lookback-hours", "48"],
+                            cwd=str(SCRIPT_DIR), stdout=out, stderr=err, start_new_session=True)
+    FETCH_STATE.write_text(json.dumps({"pid": proc.pid, "started": time.time(), "date": date, "waits": 0}), encoding="utf-8")
     print("抓取已开始。接着运行 fetch-wait，等它抓完。")
 
 
@@ -1387,11 +1636,18 @@ def cmd_fetch_wait(a, cfg):
     if not FETCH_STATE.exists():
         sys.exit("还没有开始抓取，先运行 fetch。")
     st = json.loads(FETCH_STATE.read_text(encoding="utf-8"))
+    st["waits"] = st.get("waits", 0) + 1
+    FETCH_STATE.write_text(json.dumps(st), encoding="utf-8")
     t0 = time.time()
     while pid_alive(st.get("pid")) and time.time() - t0 < WAIT_SECONDS:
         time.sleep(5)
     if pid_alive(st.get("pid")):
-        print("还在抓取，已经抓了 %d 分钟。再运行一次 fetch-wait。" % ((time.time() - st.get("started", t0)) / 60))
+        mins = (time.time() - st.get("started", t0)) / 60
+        if st["waits"] >= MAX_FETCH_WAITS:
+            print("抓取失败：已经等了 %d 次、%d 分钟还没抓完。按「出了问题怎么办」处理，抓取日志在 %s。"
+                  % (st["waits"], mins, LOG_DIR / ("prepare-%s.log" % st.get("date", ""))))
+            sys.exit(1)
+        print("还在抓取，已经抓了 %d 分钟。再运行一次 fetch-wait（最多 %d 次）。" % (mins, MAX_FETCH_WAITS))
         return
     try:
         raw = json.loads(RAW_TMP.read_text(encoding="utf-8"))
@@ -1409,31 +1665,129 @@ def cmd_fetch_wait(a, cfg):
 
 
 def run_deliver(args):
-    r = subprocess.run([sys.executable, str(SCRIPT_DIR / "deliver.py")] + args, cwd=str(SCRIPT_DIR))
+    r = subprocess.run([worker_python(), str(SCRIPT_DIR / "deliver.py")] + args, cwd=str(SCRIPT_DIR))
     return r.returncode
 
 
+def save_archive(cfg, date, text):
+    """把当天的 Markdown 存进 Obsidian 库。同一次运行里重复生成时覆盖这次写的那个文件，不多出 -2、-3。"""
+    folder = (cfg.get("delivery") or {}).get("obsidianPath")
+    if not folder:
+        return "没有配置存档目录"
+    folder = Path(folder).expanduser()
+    folder.mkdir(parents=True, exist_ok=True)
+    st = run_state()
+    mine = st.get("archived")
+    if mine and st.get("date") == date and Path(mine).parent == folder:
+        path = Path(mine)
+    else:
+        path = folder / ("AI-Digest-%s.md" % date)
+        i = 2
+        while path.exists():
+            path = folder / ("AI-Digest-%s-%d.md" % (date, i))
+            i += 1
+    path.write_text(text, encoding="utf-8")
+    if RUN_DATE.exists():
+        save_run_state(archived=str(path))
+    return str(path)
+
+
+def commit_seen():
+    """邮件发出后，才把这次运行记的「已收过」并入正式记录。失败的那天不并入，第二天会重新取。"""
+    for main, new in ((USER_DIR / "seen-videos.json", USER_DIR / "seen-videos.new.json"),
+                      (USER_DIR / "seen-articles.json", USER_DIR / "seen-articles.new.json")):
+        try:
+            n = json.loads(new.read_text(encoding="utf-8")) if new.exists() else {}
+        except Exception:
+            n = {}
+        if not n:
+            continue
+        try:
+            m = json.loads(main.read_text(encoding="utf-8")) if main.exists() else {}
+        except Exception:
+            m = {}
+        for k, v in n.items():
+            m[k] = max(v, m.get(k, 0))
+        main.write_text(json.dumps(m, indent=2), encoding="utf-8")
+        new.write_text("{}", encoding="utf-8")
+
+
+def report_to_server(cfg, date, note):
+    """邮件发出后向腾讯云服务器报到。服务器每天 10:30 检查，没收到报到就单独发邮件提醒。"""
+    h = cfg.get("health") or {}
+    host, key = h.get("host"), os.path.expanduser(h.get("sshKey", ""))
+    if not host or not key or not os.path.exists(key):
+        return "没有配置服务器"
+    payload = json.dumps({"date": date, "at": datetime.now(get_tz(cfg)).strftime("%Y-%m-%d %H:%M"), "note": note},
+                         ensure_ascii=False)
+    try:
+        r = subprocess.run(["ssh", "-i", key, "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
+                            "-o", "StrictHostKeyChecking=accept-new", host,
+                            "mkdir -p ~/digest-health && cat > ~/digest-health/last_ok.json"],
+                           input=payload, text=True, capture_output=True, timeout=45)
+        return "已报到" if r.returncode == 0 else "报到失败：%s" % (r.stderr.strip()[-120:] or r.returncode)
+    except Exception as e:
+        return "报到失败：%s" % e
+
+
+def send_mail_stdlib(cfg, subject, text):
+    """只用标准库发一封纯文字邮件。专用环境坏了、deliver.py 跑不起来时，失败通知还能发出去。"""
+    import urllib.request
+    key = ""
+    try:
+        for line in (USER_DIR / ".env").read_text(encoding="utf-8").splitlines():
+            if line.strip().startswith("RESEND_API_KEY="):
+                key = line.split("=", 1)[1].strip().strip("'\"")
+    except Exception:
+        pass
+    to = (cfg.get("delivery") or {}).get("email")
+    if not key or not to:
+        return False
+    body = json.dumps({"from": "AI Digest <digest@resend.dev>", "to": [to], "subject": subject, "text": text}).encode("utf-8")
+    req = urllib.request.Request("https://api.resend.com/emails", data=body, method="POST",
+                                 headers={"Content-Type": "application/json", "Authorization": "Bearer " + key})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return 200 <= r.status < 300
+    except Exception:
+        return False
+
+
 def cmd_deliver(a, cfg):
-    """把当天的 Markdown 存进 Obsidian，并发邮件。"""
-    date = a.date or today_str(cfg)
+    """发邮件（存档已在 build 时写好）。邮件发出后：并入「已收过」记录，向服务器报到。"""
+    date = run_date(cfg, a)
     ddir = page_dir(cfg) / "days" / date
     md, email = ddir / "digest.md", ddir / "email.html"
     if not md.exists():
         sys.exit("%s 还没有生成存档，先运行 build。" % date)
     if a.page_failed:
         # 网页没更新成：邮件里直接带完整内容
-        args = ["--file", str(md), "--subject", "AI 早报 — %s（网页没更新成）" % date]
+        args = ["--email-only", "--file", str(md), "--subject", "AI 早报 — %s（网页没更新成）" % date]
     else:
-        args = ["--file", str(md), "--email-html", str(email), "--subject", "AI 早报 — %s" % date]
-    sys.exit(run_deliver(args))
+        args = ["--email-only", "--file", str(md), "--email-html", str(email), "--subject", "AI 早报 — %s" % date]
+    code = run_deliver(args)
+    if code != 0:
+        print("邮件第一次没发出去，30 秒后再试一次。")
+        time.sleep(30)
+        code = run_deliver(args)
+    if code != 0:
+        print("邮件没发出去（试了两次）。这次取到的内容不记为已收过，明天会重新取。")
+        sys.exit(1)
+    commit_seen()
+    print("服务器报到：%s" % report_to_server(cfg, date, "网页没更新成" if a.page_failed else "正常"))
 
 
 def cmd_fail(a, cfg):
-    """早报没生成成功时，把「失败说明.txt」里的文字发一封邮件，不存档。"""
-    date = a.date or today_str(cfg)
+    """早报没生成成功时，把「失败说明.txt」里的文字发一封邮件，不存档。专用环境坏了也要发得出去。"""
+    date = run_date(cfg, a)
     note = page_dir(cfg) / "days" / date / "失败说明.txt"
     text = note.read_text(encoding="utf-8").strip() if note.exists() else "没有写失败说明。"
-    sys.exit(run_deliver(["--email-only", "--subject", "AI 早报今天没有生成（%s）" % date, "--message", text]))
+    subject = "AI 早报今天没有生成（%s）" % date
+    if run_deliver(["--email-only", "--subject", subject, "--message", text]) == 0:
+        sys.exit(0)
+    ok = send_mail_stdlib(cfg, subject, text)
+    print("失败通知" + ("已用备用方式发出。" if ok else "也没发出去。"))
+    sys.exit(0 if ok else 1)
 
 
 def main():

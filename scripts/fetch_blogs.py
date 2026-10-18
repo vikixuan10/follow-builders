@@ -55,6 +55,8 @@ SOURCES_PATH = REPO_DIR / "config" / "my-sources.json"
 
 USER_DIR = Path.home() / ".follow-builders"
 STATE_PATH = USER_DIR / "seen-articles.json"
+# 这次运行的去重记录先写到这里，邮件确认发出后才由 build_page.py 并入 STATE_PATH（2026-10-18 起）。
+STATE_NEW_PATH = USER_DIR / "seen-articles.new.json"
 
 UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -81,8 +83,9 @@ def load_state() -> Dict[str, float]:
 
 
 def save_state(state: Dict[str, float]) -> None:
+    """写到 STATE_NEW_PATH，不直接改正式记录；邮件发出后由 build_page.py 并入。"""
     USER_DIR.mkdir(parents=True, exist_ok=True)
-    with open(STATE_PATH, "w", encoding="utf-8") as f:
+    with open(STATE_NEW_PATH, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2)
 
 
@@ -287,19 +290,12 @@ def extract_article_content(html: str) -> Dict[str, Any]:
         if m:
             published = m.group(1)
 
-    # Content: extract from <article> tag if present, else main
-    content_html = ""
-    m = re.search(r"<article[^>]*>(.+?)</article>", html, flags=re.DOTALL | re.IGNORECASE)
-    if m:
-        content_html = m.group(1)
-    else:
-        m = re.search(r"<main[^>]*>(.+?)</main>", html, flags=re.DOTALL | re.IGNORECASE)
-        if m:
-            content_html = m.group(1)
-        else:
-            content_html = html
-
-    content = strip_html_tags(content_html)
+    # Content: 取 <article> 和 <main> 里最长的那一块。有的网页第一个 <article> 是「相关文章」卡片
+    # （2026-10-16 DeepMind 一篇只取到 110 个字符），所以不再只取第一个。都没有才用整页。
+    blocks = re.findall(r"<article[^>]*>(.+?)</article>", html, flags=re.DOTALL | re.IGNORECASE)
+    blocks += re.findall(r"<main[^>]*>(.+?)</main>", html, flags=re.DOTALL | re.IGNORECASE)
+    texts = [strip_html_tags(b) for b in blocks]
+    content = max(texts, key=len) if texts else strip_html_tags(html)
     truncated = False
     if len(content) > MAX_CONTENT_CHARS:
         content = content[:MAX_CONTENT_CHARS]
@@ -337,7 +333,11 @@ def main() -> int:
 
         index_html = fetch_html(index_url)
         if not index_html:
-            errors.append(f"Could not fetch index: {name}")
+            errors.append(f"博客：{name} 的目录页打不开")
+            continue
+        if blog.get("type") == "rss" and "<item" not in index_html:
+            # 被拦时返回的是网页，或者订阅源换了格式：一条条目都解析不出来
+            errors.append(f"博客：{name} 的订阅源里一条条目都没有（可能被拦，或换了格式）")
             continue
 
         # Use blog-specific extractor. Order matters — match more specific paths first.
@@ -361,7 +361,7 @@ def main() -> int:
             # The page loaded but nothing matched: the site layout or URLs changed.
             # (An RSS feed with nothing in the last few days is normal, not an error.)
             if blog.get("type") != "rss":
-                errors.append(f"No article links found on index page: {name} ({index_url})")
+                errors.append(f"博客：{name} 的目录页上一篇文章都没认出来（网站可能改版了）")
             continue
 
         now = time.time()
@@ -383,7 +383,7 @@ def main() -> int:
 
             article_html = fetch_html(url)
             if not article_html:
-                errors.append(f"Could not fetch: {url}")
+                errors.append(f"博客：{name} 有一篇文章打不开（{url}）")
                 continue
 
             article = extract_article_content(article_html)

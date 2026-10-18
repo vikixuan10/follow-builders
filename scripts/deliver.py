@@ -227,8 +227,10 @@ def main() -> int:
         print(digest)
         return 0
 
-    print(json.dumps({"status": "ok", "results": results}, ensure_ascii=False, indent=2))
-    return 0
+    failed = [k for k, v in results.items() if v is not None and not v.get("ok")]
+    print(json.dumps({"status": "failed" if failed else "ok", "results": results}, ensure_ascii=False, indent=2))
+    # 任何一路没成功都返回 1（以前一律返回 0，邮件没发出去也报告成功）
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
